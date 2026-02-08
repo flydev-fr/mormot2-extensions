@@ -38,6 +38,6 @@ You can explore your MCP server using the official MCP Inspector. Just run `pnpx
 [ ] Implement Streamable HTTP (protocol version 2026-03-26)  
 
 ## Preview
-<video src="https://raw.githubusercontent.com/flydev-fr/mormot2-extensions/main/mormot-mcp-server/docs/medias/mcp-from-warp.mp4" controls muted></video>
+<video src="" controls muted></video>
 ### MCP Inspector
 ![MCP Inspector tools](docs/medias/mcp-inspector-tools.png)
