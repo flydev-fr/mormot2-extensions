@@ -8,11 +8,10 @@ Finally going to share a small collection of tools and libraries built with the 
 - Almost all of them are currently used in professional projects and many hobby projects not disclosed.
 
 ## List
-
+- [mormot-mcp-server](./mormot-mcp-server): build your MCP servers using mormot2 with no external deps or components.
 
 
 ## Upcoming
-- MCP server extension: build your wn MCP servers using mormot2 with no external deps or components.
 - `mormot2-winsparkle`: a pure mormot2 wrapper for [WinSparkle](https://github.com/vslavik/winsparkle), an app update framework (Windows-only) - supports silent install.
 - `mormot2-sockify`, a WebSocket to TCP proxy/bridge like the well-known websockify.
 - Telegram API and bot framework.
