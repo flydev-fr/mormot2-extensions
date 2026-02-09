@@ -1,0 +1,1 @@
+You can download **winsparkle-tool.exe** from the official repo there:  https://github.com/vslavik/winsparkle/releases
