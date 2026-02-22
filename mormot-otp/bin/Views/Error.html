@@ -1,0 +1,23 @@
+{{>header}}
+<section class="mx-auto max-w-3xl">
+  <div class="overflow-hidden border border-zinc-700 bg-zinc-900 shadow-sm shadow-black/20">
+    <div class="bg-zinc-800 px-5 py-4 text-zinc-100">
+      <h1 class="text-lg font-semibold">
+        ⚠️ Error{{#errorCode}} #{{errorCode}}{{/errorCode}}
+      </h1>
+    </div>
+    <div class="space-y-4 px-5 py-5">
+      <p class="text-sm text-zinc-300">{{msg}}</p>
+      {{#exception}}
+      <div class="space-y-2">
+        <p class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Exception</p>
+        <pre class="overflow-x-auto bg-zinc-950 p-3 text-xs text-zinc-300">{{exception}}</pre>
+      </div>
+      {{/exception}}
+      <div class="pt-2">
+        <a href="default" class="inline-flex border border-zinc-600 px-4 py-2 text-sm font-medium text-zinc-200 transition hover:bg-zinc-800">Back to Home</a>
+      </div>
+    </div>
+  </div>
+</section>
+{{>footer}}

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <ProjectSession>
+    <PathDelim Value="\"/>
+    <Version Value="12"/>
+    <BuildModes Active="Default"/>
+    <Units>
+      <Unit>
+        <Filename Value="OtpMvcServer.lpr"/>
+        <IsPartOfProject Value="True"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\InterfaceService\otp.domain.pas"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="-1"/>
+        <TopLine Value="10"/>
+        <CursorPos X="3" Y="26"/>
+        <UsageCount Value="20"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\InterfaceService\otp.infra.pas"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="-1"/>
+        <UsageCount Value="20"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\InterfaceService\otp.infra.orm.pas"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="2"/>
+        <TopLine Value="121"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\InterfaceService\otp.api.pas"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="3"/>
+        <TopLine Value="50"/>
+        <CursorPos X="26" Y="70"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+        <IsPartOfProject Value="True"/>
+        <IsVisibleTab Value="True"/>
+        <EditorIndex Value="4"/>
+        <TopLine Value="261"/>
+        <CursorPos X="32" Y="200"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="otp.mvc.pas"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="1"/>
+        <TopLine Value="193"/>
+        <CursorPos X="32" Y="223"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\..\src\mormot.ext.otp.pas"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="-1"/>
+        <CursorPos X="18" Y="12"/>
+        <UsageCount Value="20"/>
+      </Unit>
+    </Units>
+    <JumpHistory HistoryIndex="10">
+      <Position>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+      </Position>
+      <Position>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+        <Caret Line="40" Column="25" TopLine="14"/>
+      </Position>
+      <Position>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+        <Caret Line="99" Column="16" TopLine="74"/>
+      </Position>
+      <Position>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+        <Caret Line="104" Column="37" TopLine="79"/>
+      </Position>
+      <Position>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+        <Caret Line="157" Column="71" TopLine="132"/>
+      </Position>
+      <Position>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+        <Caret Line="178" Column="23" TopLine="153"/>
+      </Position>
+      <Position>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+        <Caret Line="121" Column="20" TopLine="117"/>
+      </Position>
+      <Position>
+        <Filename Value="OtpMvcServer.lpr"/>
+      </Position>
+      <Position>
+        <Filename Value="otp.mvc.pas"/>
+      </Position>
+      <Position>
+        <Filename Value="otp.mvc.pas"/>
+        <Caret Line="223" Column="32" TopLine="193"/>
+      </Position>
+      <Position>
+        <Filename Value="..\InterfaceService\otp.api.impl.pas"/>
+        <Caret Line="121" Column="20" TopLine="117"/>
+      </Position>
+    </JumpHistory>
+    <RunParams>
+      <FormatVersion Value="2"/>
+      <Modes ActiveMode=""/>
+    </RunParams>
+  </ProjectSession>
+  <SkipCheckLCLInterfaces Value="True"/>
+</CONFIG>
