@@ -1,0 +1,40 @@
+{{>header}}
+<div class="row justify-content-center">
+  <div class="col-md-5">
+    <h2 class="mb-4">🔑 TOTP Login</h2>
+
+    {{#ErrorMsg}}
+    <div class="alert alert-danger" role="alert">
+      ⚠️ {{ErrorMsg}}
+    </div>
+    {{/ErrorMsg}}
+
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <form action="doLogin" method="post">
+          <div class="mb-3">
+            <label for="Username" class="form-label">Username</label>
+            <input type="text" class="form-control" id="Username" name="Username"
+                   placeholder="your username" autofocus required>
+          </div>
+          <div class="mb-3">
+            <label for="Token" class="form-label">TOTP Code</label>
+            <input type="text" class="form-control font-monospace fs-4 text-center
+                   letter-spacing-wide" id="Token" name="Token"
+                   placeholder="000000" maxlength="8"
+                   inputmode="numeric" pattern="[0-9]{6,8}" required>
+            <div class="form-text">Enter the 6-digit code from your authenticator app.</div>
+          </div>
+          <div class="d-grid">
+            <button type="submit" class="btn btn-primary btn-lg">Sign In</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <p class="mt-3 text-center text-muted small">
+      No account? <a href="register">Register here</a>
+    </p>
+  </div>
+</div>
+{{>footer}}

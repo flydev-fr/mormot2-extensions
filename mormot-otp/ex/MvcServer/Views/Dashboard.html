@@ -1,0 +1,72 @@
+{{>header}}
+{{#Info}}
+<div class="row">
+  <div class="col-12 mb-4 d-flex align-items-center justify-content-between">
+    <h2 class="mb-0">📊 Dashboard</h2>
+    <span class="text-muted">Logged in as <strong>{{Username}}</strong></span>
+  </div>
+
+  {{#IsAccountLocked}}
+  <div class="col-12">
+    <div class="alert alert-danger">
+      🔒 Your account is <strong>locked</strong> due to too many failed attempts.
+    </div>
+  </div>
+  {{/IsAccountLocked}}
+
+  <!-- Stats cards -->
+  <div class="col-md-4 mb-3">
+    <div class="card text-center shadow-sm h-100">
+      <div class="card-body">
+        <div class="display-4 text-primary fw-bold">{{TotalAttempts}}</div>
+        <div class="text-muted">Total Attempts</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4 mb-3">
+    <div class="card text-center shadow-sm h-100">
+      <div class="card-body">
+        <div class="display-4 text-success fw-bold">{{SuccessfulAttempts}}</div>
+        <div class="text-muted">Successful</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4 mb-3">
+    <div class="card text-center shadow-sm h-100">
+      <div class="card-body">
+        <div class="display-4 text-danger fw-bold">{{FailedAttempts}}</div>
+        <div class="text-muted">Failed</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent attempts table -->
+  <div class="col-12 mt-2">
+    <h5>Recent Authentication Attempts</h5>
+    <table class="table table-striped table-sm table-hover">
+      <thead class="table-dark">
+        <tr>
+          <th>Timestamp (Unix ms)</th>
+          <th>Result</th>
+          <th>IP Address</th>
+          <th>User Agent</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#RecentLogs}}
+        <tr>
+          <td><code>{{Timestamp}}</code></td>
+          <td>{{#Success}}✅ OK{{/Success}}{{^Success}}❌ Fail{{/Success}}</td>
+          <td>{{IpAddress}}</td>
+          <td class="text-truncate" style="max-width:220px;">{{UserAgent}}</td>
+        </tr>
+        {{/RecentLogs}}
+      </tbody>
+    </table>
+    {{^RecentLogs}}
+    <p class="text-muted">No authentication attempts recorded yet.</p>
+    {{/RecentLogs}}
+  </div>
+</div>
+{{/Info}}
+{{>footer}}

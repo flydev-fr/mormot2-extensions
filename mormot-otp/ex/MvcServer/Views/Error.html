@@ -1,0 +1,23 @@
+{{>header}}
+<div class="row justify-content-center">
+  <div class="col-md-8">
+    <div class="card border-danger shadow-sm">
+      <div class="card-header bg-danger text-white">
+        <h5 class="mb-0">
+          ⚠️ Error{{#errorCode}} #{{errorCode}}{{/errorCode}}
+        </h5>
+      </div>
+      <div class="card-body">
+        <p class="card-text">{{msg}}</p>
+        {{#exception}}
+        <hr>
+        <p class="text-muted small">Exception:</p>
+        <pre class="bg-light p-2 rounded small">{{exception}}</pre>
+        {{/exception}}
+        <hr>
+        <a href="default" class="btn btn-outline-secondary">← Back to Home</a>
+      </div>
+    </div>
+  </div>
+</div>
+{{>footer}}

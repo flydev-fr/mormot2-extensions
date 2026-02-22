@@ -1,0 +1,41 @@
+/* OTP Demo custom styles */
+
+body {
+  background-color: #f8f9fa;
+}
+
+.navbar-brand {
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.card {
+  border-radius: 0.75rem;
+}
+
+.display-4 {
+  font-weight: 700;
+  font-size: 2.5rem;
+}
+
+.font-monospace {
+  font-family: 'Courier New', Courier, monospace;
+}
+
+.letter-spacing-wide {
+  letter-spacing: 0.4em;
+}
+
+.user-select-all {
+  user-select: all;
+  cursor: text;
+}
+
+code.d-block {
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+footer a {
+  color: inherit;
+}

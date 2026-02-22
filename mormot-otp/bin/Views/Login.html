@@ -1,0 +1,35 @@
+{{>header}}
+<section class="mx-auto max-w-md">
+  <h1 class="mb-6 text-2xl font-semibold tracking-tight text-zinc-100">🔑 TOTP Login</h1>
+
+  {{#ErrorMsg}}
+  <div class="mb-4 border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm text-zinc-200">
+    ⚠️ {{ErrorMsg}}
+  </div>
+  {{/ErrorMsg}}
+
+  <div class="border border-zinc-800 bg-zinc-900 p-6 shadow-sm shadow-black/20">
+    <form action="doLogin" method="post" class="space-y-4">
+      <div>
+        <label for="Username" class="mb-1 block text-sm font-medium text-zinc-300">Username</label>
+        <input type="text" id="Username" name="Username"
+               class="block w-full border-zinc-700 bg-zinc-950 text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:ring-zinc-500"
+               placeholder="your username" autofocus required>
+      </div>
+      <div>
+        <label for="Token" class="mb-1 block text-sm font-medium text-zinc-300">TOTP Code</label>
+        <input type="text" id="Token" name="Token"
+               class="block w-full border-zinc-700 bg-zinc-950 text-center font-mono text-2xl tracking-[0.35em] text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:ring-zinc-500"
+               placeholder="000000" maxlength="8"
+               inputmode="numeric" pattern="[0-9]{6,8}" required>
+        <p class="mt-1 text-xs text-zinc-500">Enter the 6-digit code from your authenticator app.</p>
+      </div>
+      <button type="submit" class="inline-flex w-full justify-center bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-300">Sign In</button>
+    </form>
+  </div>
+
+  <p class="mt-4 text-center text-sm text-zinc-500">
+    No account? <a class="font-medium text-zinc-200 underline decoration-zinc-600 hover:text-zinc-100" href="register">Register here</a>
+  </p>
+</section>
+{{>footer}}
