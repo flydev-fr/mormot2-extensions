@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OTP Demo — {{main.pageName}}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col text-gray-800">
+
+<nav class="bg-gray-900 text-white px-6 py-3 flex items-center justify-between shadow-md">
+  <a href="default" class="font-bold text-lg tracking-tight hover:text-blue-300 transition">🔐 OTP Demo</a>
+  <div class="flex items-center gap-4 text-sm">
+    {{#main.session}}
+    <span class="text-gray-300">Logged in as <strong class="text-white">{{Username}}</strong></span>
+    <a href="logout" class="border border-gray-400 text-gray-300 px-3 py-1 rounded hover:bg-white hover:text-gray-900 transition">Logout</a>
+    {{/main.session}}
+    {{^main.session}}
+    <a href="login" class="text-gray-300 hover:text-white transition">Login</a>
+    <a href="register" class="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700 transition">Register</a>
+    {{/main.session}}
+  </div>
+</nav>
+
+<main class="flex-1 max-w-5xl mx-auto w-full px-4 py-10">

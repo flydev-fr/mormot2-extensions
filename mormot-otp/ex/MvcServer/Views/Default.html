@@ -1,0 +1,66 @@
+{{>header}}
+<div class="row justify-content-center">
+  <div class="col-md-8">
+    <div class="text-center mb-5">
+      <h1 class="display-5">🔐 One-Time Password Demo</h1>
+      <p class="lead text-muted">
+        A working TOTP / HOTP authentication server built with
+        <a href="https://mormot.net" target="_blank">mORMot 2</a> MVC.
+      </p>
+    </div>
+
+    {{#main.session}}
+    <div class="card border-success mb-4">
+      <div class="card-body text-center">
+        <h5 class="card-title text-success">✅ You are logged in as <strong>{{Username}}</strong></h5>
+        <a href="dashboard" class="btn btn-success me-2">View Dashboard</a>
+        <a href="logout" class="btn btn-outline-secondary">Logout</a>
+      </div>
+    </div>
+    {{/main.session}}
+
+    {{^main.session}}
+    <div class="row g-4 text-center">
+      <div class="col-md-6">
+        <div class="card h-100 shadow-sm">
+          <div class="card-body">
+            <div class="fs-1 mb-3">📝</div>
+            <h5 class="card-title">Register</h5>
+            <p class="card-text text-muted">
+              Create a new account. You will receive an OTP secret to scan
+              with Google Authenticator or Authy.
+            </p>
+            <a href="register" class="btn btn-primary">Get Started</a>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card h-100 shadow-sm">
+          <div class="card-body">
+            <div class="fs-1 mb-3">🔑</div>
+            <h5 class="card-title">Login</h5>
+            <p class="card-text text-muted">
+              Enter your username and the 6-digit TOTP code from your
+              authenticator app.
+            </p>
+            <a href="login" class="btn btn-outline-primary">Sign In</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    {{/main.session}}
+
+    <div class="card mt-5 bg-light">
+      <div class="card-body">
+        <h6 class="card-title">How it works</h6>
+        <ol class="mb-0 small text-muted">
+          <li>Register an account → the server generates a 160-bit TOTP secret</li>
+          <li>Scan the <code>otpauth://</code> URL with any TOTP app (RFC 6238)</li>
+          <li>Login using your username + the current 6-digit code</li>
+          <li>The server validates the code with ±30 s window tolerance</li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</div>
+{{>footer}}

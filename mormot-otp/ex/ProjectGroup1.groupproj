@@ -1,0 +1,60 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{A9FFB9A2-01DA-437F-A37B-92B6293A5CA8}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="Vcl\Demo.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="InterfaceService\OtpServer.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="MvcServer\OtpMvcServer.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="Demo">
+        <MSBuild Projects="Vcl\Demo.dproj"/>
+    </Target>
+    <Target Name="Demo:Clean">
+        <MSBuild Projects="Vcl\Demo.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="Demo:Make">
+        <MSBuild Projects="Vcl\Demo.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="OtpServer">
+        <MSBuild Projects="InterfaceService\OtpServer.dproj"/>
+    </Target>
+    <Target Name="OtpServer:Clean">
+        <MSBuild Projects="InterfaceService\OtpServer.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="OtpServer:Make">
+        <MSBuild Projects="InterfaceService\OtpServer.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="OtpMvcServer">
+        <MSBuild Projects="MvcServer\OtpMvcServer.dproj"/>
+    </Target>
+    <Target Name="OtpMvcServer:Clean">
+        <MSBuild Projects="MvcServer\OtpMvcServer.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="OtpMvcServer:Make">
+        <MSBuild Projects="MvcServer\OtpMvcServer.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="Demo;OtpServer;OtpMvcServer"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="Demo:Clean;OtpServer:Clean;OtpMvcServer:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="Demo:Make;OtpServer:Make;OtpMvcServer:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>
