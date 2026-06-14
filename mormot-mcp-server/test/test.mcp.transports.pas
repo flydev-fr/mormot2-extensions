@@ -1,4 +1,4 @@
-// - transport tests for mormot.ext.mcp
+﻿// - transport tests for mormot.ext.mcp
 unit test.mcp.transports;
 
 interface
@@ -78,6 +78,26 @@ type
     procedure StdioTransportProcess;
     procedure StdioTransportMultiple;
     procedure StdioTransportBadJson;
+  end;
+
+  TTestMcpStreamableTransport = class(TSynTestCase)
+  protected
+    procedure EnsureCalcParamsRtti;
+    function StartStreamableTransport(const aServer: TMcpServer;
+      out aTransport: TMcpStreamableHttpTransport): integer;
+  published
+    procedure PostInitialize;
+    procedure PostWithSession;
+    procedure PostNotification;
+    procedure PostBatch;
+    procedure DeleteSession;
+    procedure MissingSessionId;
+    procedure InvalidSessionId;
+    procedure GetReturns405;
+    procedure OriginValidation;
+    procedure MissingAcceptHeader;
+    procedure WrongContentType;
+    procedure PostStreamsChunked;
   end;
 
 implementation
@@ -1015,6 +1035,648 @@ begin
     server.Free;
     DeleteFile(inputFile);
     DeleteFile(outputFile);
+  end;
+end;
+
+{ TTestMcpStreamableTransport }
+
+procedure TTestMcpStreamableTransport.EnsureCalcParamsRtti;
+begin
+  if not RecordHasFields(TypeInfo(TCalcParams)) then
+    Rtti.RegisterFromText(TypeInfo(TCalcParams),
+      'A,B:integer Enabled:boolean Name:RawUtf8');
+end;
+
+function TTestMcpStreamableTransport.StartStreamableTransport(
+  const aServer: TMcpServer;
+  out aTransport: TMcpStreamableHttpTransport): integer;
+var
+  i, port, base: integer;
+  transport: TMcpStreamableHttpTransport;
+begin
+  aTransport := nil;
+  base := 20000 + integer(GetTickCount64 mod 1000);
+  for i := 0 to 19 do
+  begin
+    port := base + i;
+    try
+      transport := TMcpStreamableHttpTransport.Create(aServer);
+      transport.Port := port;
+      transport.Start;
+      aTransport := transport;
+      result := port;
+      exit;
+    except
+      on Exception do
+      begin
+        transport.Free;
+        continue;
+      end;
+    end;
+  end;
+  result := 0;
+  Check(false, 'Unable to start Streamable transport on an available port');
+end;
+
+procedure TTestMcpStreamableTransport.PostInitialize;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request, sessionId: RawUtf8;
+  lines: TRawUtf8DynArray;
+  dataJson: RawUtf8;
+  doc, resultDoc: PDocVariantData;
+  docVar, resultVar: variant;
+  tmp: RawUtf8;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Send initialize request
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json');
+    CheckEqual(status, HTTP_SUCCESS, 'initialize status');
+
+    // Verify Mcp-Session-Id header in response
+    FindNameValue(client.Headers, 'MCP-SESSION-ID:', sessionId);
+    sessionId := TrimU(sessionId);
+    Check(sessionId <> '', 'Mcp-Session-Id header must be present');
+
+    // Verify Content-Type is text/event-stream
+    Check(PosEx('text/event-stream', client.ContentType) > 0,
+      'response should be SSE');
+
+    // Verify CORS Expose-Headers
+    Check(PosEx('Access-Control-Expose-Headers', client.Headers) > 0,
+      'CORS Expose-Headers must be present');
+
+    // Parse SSE: verify event structure (event, id, data fields)
+    lines := CsvToRawUtf8DynArray(client.Content, #10);
+    Check(length(lines) > 0, 'SSE response must have lines');
+
+    // Verify event: message line exists
+    dataJson := '';
+    for status := 0 to high(lines) do
+    begin
+      if IdemPChar(pointer(lines[status]), 'EVENT: ') then
+        Check(TrimU(copy(lines[status], 8, MaxInt)) = 'message',
+          'SSE event type should be message');
+      if IdemPChar(pointer(lines[status]), 'ID: ') then
+        Check(TrimU(copy(lines[status], 5, MaxInt)) <> '',
+          'SSE id should be non-empty');
+      if IdemPChar(pointer(lines[status]), 'DATA: ') then
+      begin
+        dataJson := TrimU(copy(lines[status], 7, MaxInt));
+      end;
+    end;
+    Check(dataJson <> '', 'SSE data line must exist');
+
+    // Parse JSON-RPC response
+    docVar := _JsonFast(dataJson);
+    doc := _Safe(docVar);
+    resultVar := doc^.GetValueOrNull('result');
+    resultDoc := _Safe(resultVar);
+    Check(resultDoc^.IsObject, 'result must be object');
+
+    // Verify protocol version is 2025-03-26
+    Check(resultDoc^.GetAsRawUtf8('protocolVersion', tmp));
+    CheckEqual(tmp, MCP_PROTOCOL_VERSION_20250326, 'protocol version');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.PostStreamsChunked;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port, status, i, evtCount: integer;
+  client: THttpClientSocket;
+  request, sessionId: RawUtf8;
+  lines: TRawUtf8DynArray;
+begin
+  // Regression guard for the streaming fix: the Streamable HTTP transport must
+  // deliver a real chunked text/event-stream (held-open, no fixed
+  // Content-Length), NOT a single buffered body. The previous implementation
+  // assigned Ctxt.OutContent and the framework sent one Content-Length response;
+  // that path is now forbidden by the hfTransferChunked assertions below.
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // initialize
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, 'Accept: text/event-stream, application/json');
+    CheckEqual(status, HTTP_SUCCESS, 'initialize status');
+    Check(hfTransferChunked in client.Http.HeaderFlags,
+      'initialize response must be a chunked SSE stream, not a buffered body');
+    FindNameValue(client.Headers, 'MCP-SESSION-ID:', sessionId);
+    sessionId := TrimU(sessionId);
+    Check(sessionId <> '', 'session id present');
+
+    // batch of two requests on the SAME socket: proves multiple discrete SSE
+    // events are streamed AND that the connection survives for keep-alive reuse
+    request := '[' +
+      '{"jsonrpc":"2.0","id":2,"method":"ping","params":{}},' +
+      '{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}]';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      FormatUtf8('Accept: text/event-stream, application/json'#13#10 +
+        'Mcp-Session-Id: %', [sessionId]));
+    CheckEqual(status, HTTP_SUCCESS, 'batch status (keep-alive reuse after stream)');
+    Check(hfTransferChunked in client.Http.HeaderFlags,
+      'batch response must be chunked');
+    Check(PosEx('text/event-stream', client.ContentType) > 0, 'SSE content-type');
+
+    // exactly one SSE event per request in the batch
+    lines := CsvToRawUtf8DynArray(client.Content, #10);
+    evtCount := 0;
+    for i := 0 to high(lines) do
+      if IdemPChar(pointer(lines[i]), 'EVENT: MESSAGE') then
+        inc(evtCount);
+    CheckEqual(evtCount, 2, 'two discrete SSE events streamed for the batch');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.PostWithSession;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  tool: IMcpTool;
+  client: THttpClientSocket;
+  status: integer;
+  request, sessionId: RawUtf8;
+  lines: TRawUtf8DynArray;
+  dataJson, tmp: RawUtf8;
+  doc, resultDoc, listDoc, itemDoc: PDocVariantData;
+  docVar, resultVar, listVar, itemVar: variant;
+  j: integer;
+begin
+  EnsureCalcParamsRtti;
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    tool := TCalcTool.Create('calc', 'Add two numbers');
+    server.RegisterTool(tool);
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Step 1: Initialize to get session ID
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json');
+    CheckEqual(status, HTTP_SUCCESS, 'init status');
+    FindNameValue(client.Headers, 'MCP-SESSION-ID:', sessionId);
+    sessionId := TrimU(sessionId);
+    Check(sessionId <> '', 'session id');
+
+    // Step 2: tools/list with session
+    request := '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      FormatUtf8('Accept: text/event-stream, application/json'#13#10 +
+        'Mcp-Session-Id: %', [sessionId]));
+    CheckEqual(status, HTTP_SUCCESS, 'tools/list status');
+
+    // Parse SSE data
+    lines := CsvToRawUtf8DynArray(client.Content, #10);
+    dataJson := '';
+    for j := 0 to high(lines) do
+      if IdemPChar(pointer(lines[j]), 'DATA: ') then
+      begin
+        dataJson := TrimU(copy(lines[j], 7, MaxInt));
+        break;
+      end;
+    Check(dataJson <> '', 'tools/list SSE data');
+
+    docVar := _JsonFast(dataJson);
+    doc := _Safe(docVar);
+    resultVar := doc^.GetValueOrNull('result');
+    resultDoc := _Safe(resultVar);
+    listVar := resultDoc^.GetValueOrNull('tools');
+    listDoc := _Safe(listVar);
+    Check(listDoc^.IsArray, 'tools is array');
+    Check(listDoc^.Count > 0, 'tools not empty');
+    itemVar := listDoc^.Values[0];
+    Check(_Safe(itemVar, itemDoc), 'tools[0] is object');
+    Check(itemDoc^.GetAsRawUtf8('name', tmp));
+    CheckEqual(tmp, 'calc', 'tool name');
+
+    // Step 3: tools/call with session
+    request := '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":' +
+      '{"name":"calc","arguments":{"a":10,"b":20,"enabled":true,"name":"x"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      FormatUtf8('Accept: text/event-stream, application/json'#13#10 +
+        'Mcp-Session-Id: %', [sessionId]));
+    CheckEqual(status, HTTP_SUCCESS, 'tools/call status');
+
+    lines := CsvToRawUtf8DynArray(client.Content, #10);
+    dataJson := '';
+    for j := 0 to high(lines) do
+      if IdemPChar(pointer(lines[j]), 'DATA: ') then
+      begin
+        dataJson := TrimU(copy(lines[j], 7, MaxInt));
+        break;
+      end;
+    Check(dataJson <> '', 'tools/call SSE data');
+    Check(PosEx('10 + 20 = 30', dataJson) > 0, 'calc result');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.PostNotification;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request, sessionId: RawUtf8;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Initialize first
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json');
+    CheckEqual(status, HTTP_SUCCESS);
+    FindNameValue(client.Headers, 'MCP-SESSION-ID:', sessionId);
+    sessionId := TrimU(sessionId);
+
+    // Send notification — should get 202 Accepted
+    request := '{"jsonrpc":"2.0","method":"notifications/initialized"}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      FormatUtf8('Accept: text/event-stream, application/json'#13#10 +
+        'Mcp-Session-Id: %', [sessionId]));
+    CheckEqual(status, HTTP_ACCEPTED, 'notification should return 202');
+    Check(TrimU(client.Content) = '', 'notification body should be empty');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.PostBatch;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  tool: IMcpTool;
+  client: THttpClientSocket;
+  status: integer;
+  request, sessionId: RawUtf8;
+  lines: TRawUtf8DynArray;
+  dataCount, j: integer;
+begin
+  EnsureCalcParamsRtti;
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    tool := TCalcTool.Create('calc', 'Add two numbers');
+    server.RegisterTool(tool);
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Initialize
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json');
+    FindNameValue(client.Headers, 'MCP-SESSION-ID:', sessionId);
+    sessionId := TrimU(sessionId);
+
+    // Send batch of 2 requests + 1 notification
+    request := '[' +
+      '{"jsonrpc":"2.0","id":10,"method":"tools/list","params":{}},' +
+      '{"jsonrpc":"2.0","method":"notifications/initialized"},' +
+      '{"jsonrpc":"2.0","id":11,"method":"ping"}' +
+      ']';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      FormatUtf8('Accept: text/event-stream, application/json'#13#10 +
+        'Mcp-Session-Id: %', [sessionId]));
+    CheckEqual(status, HTTP_SUCCESS, 'batch status');
+
+    // Count SSE data lines — should be 2 (one per request, notification has none)
+    lines := CsvToRawUtf8DynArray(client.Content, #10);
+    dataCount := 0;
+    for j := 0 to high(lines) do
+      if IdemPChar(pointer(lines[j]), 'DATA: ') then
+        inc(dataCount);
+    CheckEqual(dataCount, 2, 'batch should produce 2 SSE data events');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.DeleteSession;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request, sessionId: RawUtf8;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Initialize
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json');
+    FindNameValue(client.Headers, 'MCP-SESSION-ID:', sessionId);
+    sessionId := TrimU(sessionId);
+    Check(sessionId <> '', 'session id present');
+
+    // DELETE the session using a fresh connection (keep-alive DELETE may timeout)
+    client.Free;
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+    status := client.Request(transport.Endpoint, 'DELETE', 0,
+      'Mcp-Session-Id: ' + sessionId, '', '');
+    CheckEqual(status, HTTP_SUCCESS, 'DELETE should return 200');
+
+    // Subsequent request with same session should get 404 (fresh connection)
+    client.Free;
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+    request := '{"jsonrpc":"2.0","id":2,"method":"ping"}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      FormatUtf8('Accept: text/event-stream, application/json'#13#10 +
+        'Mcp-Session-Id: %', [sessionId]));
+    CheckEqual(status, HTTP_NOTFOUND, 'after DELETE should get 404');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.MissingSessionId;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request: RawUtf8;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Non-initialize request without Mcp-Session-Id should get 400
+    request := '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json');
+    CheckEqual(status, HTTP_BADREQUEST, 'missing session id should return 400');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.InvalidSessionId;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request: RawUtf8;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Request with non-existent session ID should get 404
+    request := '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json'#13#10 +
+      'Mcp-Session-Id: non-existent-session-id');
+    CheckEqual(status, HTTP_NOTFOUND, 'invalid session id should return 404');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.GetReturns405;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+    status := client.Get(transport.Endpoint, HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream');
+    CheckEqual(status, HTTP_NOTALLOWED, 'GET should return 405');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.OriginValidation;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request: RawUtf8;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    // Set specific CORS origin
+    transport.CorsOrigins := 'https://allowed.example.com';
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Request with wrong Origin should get 403
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json'#13#10 +
+      'Origin: https://evil.example.com');
+    CheckEqual(status, HTTP_FORBIDDEN, 'wrong origin should return 403');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.MissingAcceptHeader;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request: RawUtf8;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    // Accept header is filtered by mORMot's THttpAsyncServer (HeadersUnFiltered=false)
+    // so the server cannot validate it. The transport is lenient: if Accept is not
+    // found in InHeaders, the request is accepted (same as SSE transport behavior).
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: application/json');
+    CheckEqual(status, HTTP_SUCCESS, 'should succeed when Accept is filtered');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.WrongContentType;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request: RawUtf8;
+begin
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize"}';
+    status := client.Post(transport.Endpoint, request, TEXT_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS,
+      'Accept: text/event-stream, application/json');
+    CheckEqual(status, 415, 'wrong content-type should return 415');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
   end;
 end;
 

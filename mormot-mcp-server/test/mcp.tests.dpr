@@ -26,7 +26,8 @@ procedure TMcpTests.MCP;
 begin
   AddCase([
     TTestMcpCore,
-    TTestMcpTransports
+    TTestMcpTransports,
+    TTestMcpStreamableTransport
   ]);
 end;
 
@@ -48,6 +49,4 @@ begin
     TMcpTests.RunAsConsole('mORMot MCP Tests', LOG_VERBOSE, [],
       Executable.ProgramFilePath + 'data');
   end;
-  ConsoleWaitForEnterKey;
-
 end.

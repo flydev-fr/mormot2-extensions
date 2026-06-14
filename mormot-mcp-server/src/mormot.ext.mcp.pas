@@ -41,6 +41,9 @@ const
   /// MCP Protocol Version
   MCP_PROTOCOL_VERSION = '2024-11-05';
 
+  /// MCP Protocol Version (2025-03-26 - Streamable HTTP)
+  MCP_PROTOCOL_VERSION_20250326 = '2025-03-26';
+
   /// JSON-RPC 2.0 Error Codes
   JSONRPC_PARSE_ERROR = -32700;
   JSONRPC_INVALID_REQUEST = -32600;

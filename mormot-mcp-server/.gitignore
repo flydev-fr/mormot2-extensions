@@ -91,3 +91,7 @@ backup/
 
 # Claude Code local settings
 .claude/
+
+# IDE helper + test run artifacts (regenerated; not for version control)
+*.ithelper
+*.log
