@@ -103,9 +103,45 @@ Key things to know:
 | Flag | Meaning |
 |---|---|
 | `epoEnvAddExisting` | Merge given `env` with the current process's environment |
-| `epoJobCloseChildren` | Wrap the child in a Windows Job Object so it is auto-closed when the parent dies |
+| `epoJobCloseChildren` | Wrap the child in a Windows Job Object so it is auto-closed when the parent dies (see below) |
 | `epoNewConsole` | Give the child its own console window |
 | `epoNewProcessGroup` | Create the child in its own Windows process group so `CTRL_BREAK_EVENT` can be targeted at it alone |
+
+### `epoJobCloseChildren` and Job Objects
+
+With this option, `Start()` creates the child with `CREATE_BREAKAWAY_FROM_JOB`,
+then puts it in a new job flagged `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
+(`CreateJobToClose` from `mormot.core.os`). Only the `TExternalProcess`
+instance holds a handle on that job. Once the handle is closed, Windows kills
+the child. That happens when the instance is freed, and also when the parent
+process exits or crashes without freeing anything.
+
+**When the parent already runs in a job.** Many terminals, IDEs, launchers, CI
+agents and sandboxes start their processes inside a job. If that job does not
+set `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, Windows refuses `CREATE_BREAKAWAY_FROM_JOB`
+and `CreateProcessW` fails with `ERROR_ACCESS_DENIED`. Then `Start()` tries
+once more without that flag:
+
+- **Windows 8 and later.** The child stays in the parent's job, and our own job
+  is nested inside it, so the child is still killed when our job is closed. The
+  parent's job limits also apply to the child.
+- **Windows 7 and earlier.** A process can belong to only one job, so
+  `AssignProcessToJobObject` fails. The child runs without our job. `Start()`
+  still returns `true`. Freeing the instance still terminates the child, but a
+  parent crash no longer does.
+
+Only `ERROR_ACCESS_DENIED` triggers the second attempt. Any other failure, such
+as a missing executable, makes `Start()` return `false` with `GetLastError`
+unchanged.
+
+`RunCommand(..., [roWinJobCloseChildren])` in `mormot.core.os` also retries
+without `CREATE_BREAKAWAY_FROM_JOB`, but then creates no job at all. Here the
+job is kept.
+
+**Grandchildren are not covered.** The job is created with
+`JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`, as `mormot.core.os` does, so the
+processes the child starts are outside the job. With `cmd /c tool.exe`, only
+`cmd` is killed with the job. Start `tool.exe` directly when it must be killed.
 
 ## Graceful Shutdown Patterns
 

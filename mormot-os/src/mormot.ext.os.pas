@@ -18,7 +18,9 @@ type
   /// options for TExternalProcess and the RunRedirect stdinput overload
   // - epoEnvAddExisting merges provided env pairs with the current environment
   // - epoJobCloseChildren wraps the child in a Windows Job Object so its
-  // children are auto-killed when the parent dies
+  // children are auto-killed when the parent dies; if the parent itself runs
+  // in a job which forbids breakaway, the child stays in it and the new job
+  // is nested (Windows 8+) - on older Windows the child then runs job-less
   // - epoNewConsole gives the child its own console window
   // - epoNewProcessGroup creates the child in its own Windows process group
   // (enables targeted CTRL_BREAK_EVENT via GenerateConsoleCtrlEvent)

@@ -121,6 +121,19 @@ begin
   FillCharFast(processinfo, SizeOf(processinfo), 0);
   result := CreateProcessW(nil, pointer(wcmd), @procsec, @procsec, true,
     flags, pointer({%H-}wenv), pointer(wpath), startupinfo, processinfo);
+  if (not result) and
+     (flags and CREATE_BREAKAWAY_FROM_JOB <> 0) and
+     (GetLastError = ERROR_ACCESS_DENIED) then
+  begin
+    // our process runs in a job without JOB_OBJECT_LIMIT_BREAKAWAY_OK (some
+    // terminals, IDEs, launchers, CI agents): keep the child in that job -
+    // since Windows 8 jobs nest, so the job created below still applies
+    flags := flags and not CREATE_BREAKAWAY_FROM_JOB;
+    wcmd := SynUnicode(cmd); // CreateProcessW() may have modified wcmd
+    UniqueString(wcmd);
+    result := CreateProcessW(nil, pointer(wcmd), @procsec, @procsec, true,
+      flags, pointer({%H-}wenv), pointer(wpath), startupinfo, processinfo);
+  end;
   // close child-side pipe ends
   CloseHandle(in_rd);
   CloseHandle(out_wr);
