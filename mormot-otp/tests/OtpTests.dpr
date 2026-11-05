@@ -12,7 +12,7 @@ uses
   mormot.core.base,
   mormot.core.log,
   mormot.core.test,
-  mormot.ext.otp in '..\mormot.ext.otp.pas',
+  mormot.ext.otp in '..\src\mormot.ext.otp.pas',
   otp.tests in 'otp.tests.pas';
   
 begin

@@ -8,6 +8,7 @@ uses
   mormot.core.base,
   mormot.core.os,
   mormot.core.text,
+  mormot.core.buffers,
   mormot.ext.otp,
   otp.api,
   otp.domain,
@@ -101,8 +102,9 @@ begin
       exit;
     end;
 
-    result.QrCodeUrl := FormatUtf8('otpauth://totp/%:%?secret=%&issuer=%',
-      [OTP_ISSUER, Username, secret, OTP_ISSUER]);
+    // label and issuer are percent-encoded, so the user name can not inject
+    // any otpauth parameter
+    result.QrCodeUrl := BuildOtpAuthUri(OTP_ISSUER, Username, secret);
     result.OtpSecret := secret;
     result.Success   := true;
   finally
@@ -116,6 +118,8 @@ var
   user: TDomOtpUser;
   log: TDomOtpLog;
   tokenInt: integer;
+  secretBin: RawByteString;
+  matchedStep: Int64;
   isValid: boolean;
 begin
   Finalize(result);
@@ -127,8 +131,8 @@ begin
     exit;
   end;
 
-  tokenInt := GetInteger(pointer(Token));
-  if (tokenInt < 0) or (tokenInt > 999999) then
+  // exactly 6 ASCII digits: leading zeros are enforced, no sign/space/prefix
+  if not ParseOtpCode(Token, OTP_DEFAULT_DIGITS, tokenInt) then
   begin
     result.ErrorMessage := 'Invalid token format';
     exit;
@@ -137,7 +141,8 @@ begin
   user := fPersistence.GetUserByUsername(Username);
   if user = nil then
   begin
-    result.ErrorMessage := 'User not found';
+    // same message as a wrong code, so that account names can not be probed
+    result.ErrorMessage := 'Invalid token';
     exit;
   end;
 
@@ -155,7 +160,12 @@ begin
     end;
 
     user.LastLoginAttempt := NowUtc;
-    isValid := fOtpProvider.ValidateTOTP(user.OtpSecret, tokenInt, 1);
+    secretBin := Base32ToBin(user.OtpSecret);
+    isValid := fOtpProvider.VerifyTOTPStep(secretBin, Token, UnixTimeUtc, 1, 1, matchedStep);
+    FillZero(secretBin);
+    // refuse any code whose step was already used: no replay within the window
+    if isValid and (matchedStep <= user.LastOtpStep) then
+      isValid := false;
 
     log := TDomOtpLog.Create;
     try
@@ -171,6 +181,7 @@ begin
 
     if isValid then
     begin
+      user.LastOtpStep := matchedStep;
       user.ResetFailedAttempts;
       result.Success := true;
     end
