@@ -84,17 +84,10 @@ end;
 
 procedure TFormOTP.UpdateOtpUrl;
 var
-  Secret: string;
+  Secret: RawUtf8;
 begin
-  Secret := Trim(EdtKey.Text);
-  if Secret = '' then
-    EdtOtpUrl.Text := ''
-  else
-    EdtOtpUrl.Text :=
-      'otpauth://totp/' + OTP_ISSUER + ':' + OTP_ACCOUNT +
-      '?secret='  + Secret +
-      '&issuer='  + OTP_ISSUER +
-      '&digits=6&period=30';
+  Secret := StringToUtf8(Trim(EdtKey.Text));
+  EdtOtpUrl.Text := Utf8ToString(BuildOtpAuthUri(OTP_ISSUER, OTP_ACCOUNT, Secret, 6, 30));
 end;
 
 procedure TFormOTP.UpdateTOTP;
@@ -116,7 +109,13 @@ begin
 
   try
     Code := fOtpProvider.ComputeTOTP(Secret, 6, 30);
-    LblTOTPCode.Caption := Format('%.6d', [Code]);
+    if Code < 0 then
+    begin
+      LblTOTPCode.Caption    := 'Bad secret';
+      LblTOTPCode.Font.Color := clRed;
+      Exit;
+    end;
+    LblTOTPCode.Caption := Utf8ToString(FormatOtpCode(Code, 6));
     if Remaining <= 5 then
       LblTOTPCode.Font.Color := clRed
     else
@@ -179,13 +178,19 @@ begin
   if not TryStrToInt64(EdtCounter.Text, Counter) then
     Counter := 0;
   Code := fOtpProvider.ComputeOTP(SecretBin, Counter, 6);
-  EdtHOTPResult.Text := Format('%.6d', [Code]);
+  if Code < 0 then
+    EdtHOTPResult.Text := 'Error'
+  else
+    EdtHOTPResult.Text := Utf8ToString(FormatOtpCode(Code, 6));
 end;
 
 procedure TFormOTP.BtnValidateClick(Sender: TObject);
 var
   Secret: RawUtf8;
-  Token: Integer;
+  SecretBin: RawByteString;
+  Token: RawUtf8;
+  Value: Integer;
+  MatchedStep: Int64;
 begin
   Secret := StringToUtf8(Trim(EdtKey.Text));
   if Secret = '' then
@@ -194,20 +199,31 @@ begin
     LblValidResult.Font.Color := clGray;
     Exit;
   end;
-  if Trim(EdtValidToken.Text) = '' then
+  Token := StringToUtf8(Trim(EdtValidToken.Text));
+  if Token = '' then
   begin
     LblValidResult.Caption    := 'Enter a token to validate.';
     LblValidResult.Font.Color := clGray;
     Exit;
   end;
-  if not TryStrToInt(Trim(EdtValidToken.Text), Token) then
+  // exactly 6 ASCII digits: leading zeros are enforced, no sign/space/prefix
+  if not ParseOtpCode(Token, 6, Value) then
   begin
-    LblValidResult.Caption    := 'Token must be a number.';
+    LblValidResult.Caption    := 'Token must be exactly 6 digits.';
+    LblValidResult.Font.Color := clGray;
+    Exit;
+  end;
+  SecretBin := Base32ToBin(Secret);
+  if SecretBin = '' then
+  begin
+    LblValidResult.Caption    := 'Bad Base32 secret.';
     LblValidResult.Font.Color := clGray;
     Exit;
   end;
 
-  if fOtpProvider.ValidateTOTP(Secret, Token, 1) then
+  // a real application would persist MatchedStep and refuse any later code
+  // whose step is not greater, to prevent replay within the window
+  if fOtpProvider.VerifyTOTPStep(SecretBin, Token, UnixTimeUtc, 1, 1, MatchedStep) then
   begin
     LblValidResult.Caption    := #$2713 + ' Valid — authentication successful';
     LblValidResult.Font.Color := clGreen;

@@ -20,6 +20,9 @@ type
     procedure ComputeOtp;
     procedure ComputeTotp;
     procedure ValidateTotp;
+    procedure VerifyTotpStep;
+    procedure ParseCode;
+    procedure OtpAuthUri;
     procedure Factory;
   end;
 
@@ -29,13 +32,14 @@ type
     procedure SecretGenerator_RespectsLengthRules;
     procedure SecretGenerator_UsesOnlyBase32Alphabet;
     procedure SecretGenerator_DecodesToExpectedByteCount;
+    procedure SecretGenerator_SuccessiveSecretsDiffer;
   end;
 
   TOtpComputeOtpTests = class(TSynTestCase)
   published
     procedure ComputeOtp_Rfc4226_TestVectors_6Digits;
-    procedure ComputeOtp_DigitsOutOfRange_FallsBackTo6;
-    procedure ComputeOtp_ShortHash_ReturnsZero;
+    procedure ComputeOtp_DigitsOutOfRange_ReturnsMinusOne;
+    procedure ComputeOtp_ShortHash_ReturnsMinusOne;
     procedure ComputeOtp_DynamicTruncation_OffsetBoundary0;
     procedure ComputeOtp_DynamicTruncation_OffsetBoundary15;
     procedure ComputeOtp_DeterministicForSameInputs;
@@ -44,9 +48,10 @@ type
   TOtpComputeTotpTests = class(TSynTestCase)
   published
     procedure ComputeTotp_Rfc6238_8DigitVectors;
-    procedure ComputeTotp_NonPositiveInterval_FallsBackTo30;
-    procedure ComputeTotp_InvalidBase32Secret_ReturnsZero;
-    procedure ComputeTotp_EmptySecret_ReturnsZero;
+    procedure ComputeTotp_NonPositiveInterval_ReturnsMinusOne;
+    procedure ComputeTotp_InvalidDigits_ReturnsMinusOne;
+    procedure ComputeTotp_InvalidBase32Secret_ReturnsMinusOne;
+    procedure ComputeTotp_EmptySecret_ReturnsMinusOne;
   end;
 
   TOtpValidateTotpTests = class(TSynTestCase)
@@ -54,9 +59,41 @@ type
     procedure ValidateTotp_AcceptsCurrentStep_WithWindow0;
     procedure ValidateTotp_AcceptsAdjacentStep_WithWindow1;
     procedure ValidateTotp_RejectsAdjacentStep_WithWindow0;
-    procedure ValidateTotp_NegativeWindow_EqualsPositiveWindow;
+    procedure ValidateTotp_NegativeWindow_ReturnsFalse;
+    procedure ValidateTotp_WindowAboveMax_ReturnsFalse;
     procedure ValidateTotp_InvalidToken_ReturnsFalse;
+    procedure ValidateTotp_TokenOutOfDigitsRange_ReturnsFalse;
+    procedure ValidateTotp_ShortHash_RejectsZeroToken;
     procedure ValidateTotp_EmptyOrInvalidSecret_ReturnsFalse;
+    procedure ValidateTotp_HonoursDigitsAndInterval;
+  end;
+
+  TOtpVerifyTotpStepTests = class(TSynTestCase)
+  published
+    procedure VerifyTotpStep_Rfc6238Vector_ReportsMatchedStep;
+    procedure VerifyTotpStep_AdjacentSteps_ReportMatchedStep;
+    procedure VerifyTotpStep_OutsideWindow_ReturnsFalse;
+    procedure VerifyTotpStep_MalformedCodes_ReturnFalse;
+    procedure VerifyTotpStep_8Digits;
+    procedure VerifyTotpStep_InvalidParameters_ReturnFalse;
+    procedure VerifyTotpStep_ShortHash_RejectsZeroCode;
+    procedure VerifyTotpStep_EvaluatesEveryStep;
+  end;
+
+  TOtpParseCodeTests = class(TSynTestCase)
+  published
+    procedure ParseOtpCode_AcceptsExactDigits;
+    procedure ParseOtpCode_RejectsMalformedInput;
+    procedure ParseOtpCode_RejectsInvalidDigits;
+    procedure FormatOtpCode_PadsWithLeadingZeros;
+  end;
+
+  TOtpAuthUriTests = class(TSynTestCase)
+  published
+    procedure BuildOtpAuthUri_PlainValues;
+    procedure BuildOtpAuthUri_EncodesLabelAndIssuer;
+    procedure BuildOtpAuthUri_WithoutIssuer;
+    procedure BuildOtpAuthUri_InvalidInput_ReturnsEmpty;
   end;
 
   TOtpFactoryTests = class(TSynTestCase)
@@ -122,6 +159,7 @@ const
   TEST_SECRET_BASE32: RawUtf8 = 'JBSWY3DPEHPK3PXP';
   RFC4226_SECRET_ASCII: RawByteString = '12345678901234567890';
   RFC6238_SECRET_BASE32: RawUtf8 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+  RFC6238_SECRET_BIN: RawByteString = '12345678901234567890';
 
 function BuildHashForOffset(Offset: Byte; B1, B2, B3, B4: Byte): RawByteString;
 begin
@@ -166,6 +204,21 @@ begin
   AddCase([TOtpValidateTotpTests]);
 end;
 
+procedure TOtpTests.VerifyTotpStep;
+begin
+  AddCase([TOtpVerifyTotpStepTests]);
+end;
+
+procedure TOtpTests.ParseCode;
+begin
+  AddCase([TOtpParseCodeTests]);
+end;
+
+procedure TOtpTests.OtpAuthUri;
+begin
+  AddCase([TOtpAuthUriTests]);
+end;
+
 procedure TOtpTests.Factory;
 begin
   AddCase([TOtpFactoryTests]);
@@ -189,9 +242,13 @@ var
 begin
   Generator := TOtpFactory.CreateSecretGenerator;
   CheckEqual(Length(Generator.GenerateSecret(32)), 32, 'length=32');
-  CheckEqual(Length(Generator.GenerateSecret(24)), 24, 'length=24');
-  CheckEqual(Length(Generator.GenerateSecret(1)), 32, 'small length falls back to default');
-  CheckEqual(Length(Generator.GenerateSecret(25)), 32, 'length rounds to next multiple of 8');
+  CheckEqual(Length(Generator.GenerateSecret(40)), 40, 'length=40');
+  CheckEqual(Length(Generator.GenerateSecret(24)), 32, 'length=24 raised to 160-bit minimum');
+  CheckEqual(Length(Generator.GenerateSecret(16)), 32, 'length=16 raised to 160-bit minimum');
+  CheckEqual(Length(Generator.GenerateSecret(1)), 32, 'small length raised to minimum');
+  CheckEqual(Length(Generator.GenerateSecret(0)), 32, 'zero length raised to minimum');
+  CheckEqual(Length(Generator.GenerateSecret(-5)), 32, 'negative length raised to minimum');
+  CheckEqual(Length(Generator.GenerateSecret(33)), 40, 'length rounds to next multiple of 8');
 end;
 
 procedure TOtpInfrastructureTests.SecretGenerator_UsesOnlyBase32Alphabet;
@@ -208,15 +265,15 @@ begin
   for i := 1 to Length(Secret) do
     Check(
       PosEx(Secret[i], BASE32_CHARS) > 0,
-      Utf8ToString(FormatUtf8('invalid char at position %', [i]))
+      FormatString('invalid char at position %', [i])
     );
 end;
 
 procedure TOtpInfrastructureTests.SecretGenerator_DecodesToExpectedByteCount;
 var
   Generator: ISecretGenerator;
-  Secret32, Secret24: RawUtf8;
-  Decoded32, Decoded24: RawByteString;
+  Secret32, Secret40: RawUtf8;
+  Decoded32, Decoded40: RawByteString;
 begin
   Generator := TOtpFactory.CreateSecretGenerator;
 
@@ -224,9 +281,25 @@ begin
   Decoded32 := Base32ToBin(Secret32);
   CheckEqual(Length(Decoded32), 20, '32 base32 chars -> 20 bytes');
 
-  Secret24 := Generator.GenerateSecret(24);
-  Decoded24 := Base32ToBin(Secret24);
-  CheckEqual(Length(Decoded24), 15, '24 base32 chars -> 15 bytes');
+  Secret40 := Generator.GenerateSecret(40);
+  Decoded40 := Base32ToBin(Secret40);
+  CheckEqual(Length(Decoded40), 25, '40 base32 chars -> 25 bytes');
+end;
+
+procedure TOtpInfrastructureTests.SecretGenerator_SuccessiveSecretsDiffer;
+var
+  Generator: ISecretGenerator;
+  Previous, Current: RawUtf8;
+  i: Integer;
+begin
+  Generator := TOtpFactory.CreateSecretGenerator;
+  Previous := Generator.GenerateSecret(32);
+  for i := 1 to 20 do
+  begin
+    Current := Generator.GenerateSecret(32);
+    Check(Current <> Previous, 'successive secrets differ');
+    Previous := Current;
+  end;
 end;
 
 { TOtpComputeOtpTests }
@@ -257,22 +330,21 @@ begin
       FormatUtf8('RFC4226 vector %', [i]));
 end;
 
-procedure TOtpComputeOtpTests.ComputeOTP_DigitsOutOfRange_FallsBackTo6;
+procedure TOtpComputeOtpTests.ComputeOTP_DigitsOutOfRange_ReturnsMinusOne;
 var
   Otp: IOtpProvider;
-  Expected: Integer;
 const
   COUNTER = 7;
 begin
   Otp := TOtpFactory.CreateDefault;
-  Expected := Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, 6);
-
-  CheckEqual(Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, 0), Expected, 'digits=0');
-  CheckEqual(Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, -1), Expected, 'digits<0');
-  CheckEqual(Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, 10), Expected, 'digits>9');
+  CheckEqual(Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, 0), -1, 'digits=0');
+  CheckEqual(Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, -1), -1, 'digits<0');
+  CheckEqual(Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, 10), -1, 'digits>9');
+  Check(Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, 1) >= 0, 'digits=1 accepted');
+  Check(Otp.ComputeOTP(RFC4226_SECRET_ASCII, COUNTER, 9) >= 0, 'digits=9 accepted');
 end;
 
-procedure TOtpComputeOtpTests.ComputeOTP_ShortHash_ReturnsZero;
+procedure TOtpComputeOtpTests.ComputeOTP_ShortHash_ReturnsMinusOne;
 var
   Otp: IOtpProvider;
   Crypto: TConstantCryptoProvider;
@@ -284,7 +356,7 @@ begin
     TMormotBase32EncodingProvider.Create
   );
 
-  CheckEqual(Otp.ComputeOTP('binary-secret', 42, 6), 0, 'short hash');
+  CheckEqual(Otp.ComputeOTP('binary-secret', 42, 6), -1, 'short hash fails closed');
   CheckEqual(Crypto.CallCount, 1, 'crypto called');
   CheckEqual(Crypto.LastDataLen, SizeOf(Int64), 'counter size');
 end;
@@ -352,32 +424,39 @@ begin
   end;
 end;
 
-procedure TOtpComputeTotpTests.ComputeTOTP_NonPositiveInterval_FallsBackTo30;
+procedure TOtpComputeTotpTests.ComputeTOTP_NonPositiveInterval_ReturnsMinusOne;
 var
   Otp: IOtpProvider;
-  Expected: Integer;
 begin
   Otp := CreateDeterministicOtp(1732276815);
-  Expected := Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, 30);
-
-  CheckEqual(Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, 0), Expected, 'interval=0');
-  CheckEqual(Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, -30), Expected, 'interval<0');
+  CheckEqual(Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, 0), -1, 'interval=0');
+  CheckEqual(Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, -30), -1, 'interval<0');
+  Check(Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, 60) >= 0, 'interval=60 accepted');
 end;
 
-procedure TOtpComputeTotpTests.ComputeTOTP_InvalidBase32Secret_ReturnsZero;
+procedure TOtpComputeTotpTests.ComputeTOTP_InvalidDigits_ReturnsMinusOne;
+var
+  Otp: IOtpProvider;
+begin
+  Otp := CreateDeterministicOtp(1732276815);
+  CheckEqual(Otp.ComputeTOTP(TEST_SECRET_BASE32, 0, 30), -1, 'digits=0');
+  CheckEqual(Otp.ComputeTOTP(TEST_SECRET_BASE32, 10, 30), -1, 'digits=10');
+end;
+
+procedure TOtpComputeTotpTests.ComputeTOTP_InvalidBase32Secret_ReturnsMinusOne;
 var
   Otp: IOtpProvider;
 begin
   Otp := CreateDeterministicOtp(1732276800);
-  CheckEqual(Otp.ComputeTOTP('INVALID!!!', 6, 30), 0, 'invalid base32 secret');
+  CheckEqual(Otp.ComputeTOTP('INVALID!!!', 6, 30), -1, 'invalid base32 secret');
 end;
 
-procedure TOtpComputeTotpTests.ComputeTOTP_EmptySecret_ReturnsZero;
+procedure TOtpComputeTotpTests.ComputeTOTP_EmptySecret_ReturnsMinusOne;
 var
   Otp: IOtpProvider;
 begin
   Otp := CreateDeterministicOtp(1732276800);
-  CheckEqual(Otp.ComputeTOTP('', 6, 30), 0, 'empty secret');
+  CheckEqual(Otp.ComputeTOTP('', 6, 30), -1, 'empty secret');
 end;
 
 { TOtpValidateTotpTests }
@@ -428,21 +507,32 @@ begin
   Check(not OtpCurrent.ValidateTOTP(TEST_SECRET_BASE32, TokenNext, 0), 'next step rejected');
 end;
 
-procedure TOtpValidateTotpTests.ValidateTOTP_NegativeWindow_EqualsPositiveWindow;
+procedure TOtpValidateTotpTests.ValidateTOTP_NegativeWindow_ReturnsFalse;
 var
-  OtpCurrent, OtpPrevious: IOtpProvider;
-  TokenPrevious: Integer;
-  NegativeResult, PositiveResult: Boolean;
+  Otp: IOtpProvider;
+  Token: Integer;
 const
   BASE_TIME = 1732276800;
 begin
-  OtpCurrent := CreateDeterministicOtp(BASE_TIME);
-  OtpPrevious := CreateDeterministicOtp(BASE_TIME - 30);
-  TokenPrevious := OtpPrevious.ComputeTOTP(TEST_SECRET_BASE32, 6, 30);
+  Otp := CreateDeterministicOtp(BASE_TIME);
+  Token := Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, 30);
+  Check(Otp.ValidateTOTP(TEST_SECRET_BASE32, Token, 1), 'window=1 accepted');
+  Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, Token, -1), 'window=-1 refused');
+  Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, Token, Low(Integer)), 'window=Low(Integer) refused');
+end;
 
-  NegativeResult := OtpCurrent.ValidateTOTP(TEST_SECRET_BASE32, TokenPrevious, -1);
-  PositiveResult := OtpCurrent.ValidateTOTP(TEST_SECRET_BASE32, TokenPrevious, 1);
-  Check(NegativeResult = PositiveResult, 'negative and positive window are equivalent');
+procedure TOtpValidateTotpTests.ValidateTOTP_WindowAboveMax_ReturnsFalse;
+var
+  Otp: IOtpProvider;
+  Token: Integer;
+const
+  BASE_TIME = 1732276800;
+begin
+  Otp := CreateDeterministicOtp(BASE_TIME);
+  Token := Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, 30);
+  Check(Otp.ValidateTOTP(TEST_SECRET_BASE32, Token, OTP_MAX_WINDOW_STEPS), 'max window accepted');
+  Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, Token, OTP_MAX_WINDOW_STEPS + 1), 'max+1 window refused');
+  Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, Token, 100000), 'huge window refused');
 end;
 
 procedure TOtpValidateTotpTests.ValidateTOTP_InvalidToken_ReturnsFalse;
@@ -451,6 +541,31 @@ var
 begin
   Otp := CreateDeterministicOtp(1732276800);
   Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, -1, 0), 'invalid token');
+  Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, Low(Integer), 1), 'Low(Integer) token');
+end;
+
+procedure TOtpValidateTotpTests.ValidateTOTP_TokenOutOfDigitsRange_ReturnsFalse;
+var
+  Otp: IOtpProvider;
+begin
+  Otp := CreateDeterministicOtp(1732276800);
+  Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, 1000000, 1), '7-digit token with digits=6');
+  Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, High(Integer), 1), 'High(Integer) token');
+end;
+
+procedure TOtpValidateTotpTests.ValidateTOTP_ShortHash_RejectsZeroToken;
+var
+  Otp: IOtpProvider;
+begin
+  // a failing crypto provider used to make ComputeOTP() return 0, so that the
+  // token 0 ("000000") was accepted: it must fail closed
+  Otp := TOtpFactory.CreateWithProviders(
+    TFixedTimeProvider.Create(1732276800),
+    TConstantCryptoProvider.Create('abc'),
+    TMormotBase32EncodingProvider.Create
+  );
+  Check(not Otp.ValidateTOTP(TEST_SECRET_BASE32, 0, 1), 'token 0 refused on short hash');
+  CheckEqual(Otp.ComputeTOTP(TEST_SECRET_BASE32, 6, 30), -1, 'short hash -> -1');
 end;
 
 procedure TOtpValidateTotpTests.ValidateTOTP_EmptyOrInvalidSecret_ReturnsFalse;
@@ -460,6 +575,275 @@ begin
   Otp := CreateDeterministicOtp(1732276800);
   Check(not Otp.ValidateTOTP('', 123456, 1), 'empty secret');
   Check(not Otp.ValidateTOTP('INVALID!!!', 123456, 1), 'invalid secret');
+end;
+
+procedure TOtpValidateTotpTests.ValidateTOTP_HonoursDigitsAndInterval;
+var
+  Otp: IOtpProvider;
+begin
+  // RFC 6238 Appendix B: T=1111111109 -> 07081804 (8 digits, 30 s)
+  Otp := CreateDeterministicOtp(1111111109);
+  Check(Otp.ValidateTOTP(RFC6238_SECRET_BASE32, 7081804, 0, 8, 30), '8 digits accepted');
+  Check(Otp.ValidateTOTP(RFC6238_SECRET_BASE32, 81804, 0, 6, 30), 'last 6 digits accepted');
+  Check(not Otp.ValidateTOTP(RFC6238_SECRET_BASE32, 7081804, 0, 6, 30), '8-digit code refused with digits=6');
+  Check(not Otp.ValidateTOTP(RFC6238_SECRET_BASE32, 81804, 0, 8, 30), '6-digit code refused with digits=8');
+  Check(not Otp.ValidateTOTP(RFC6238_SECRET_BASE32, 81804, 0, 6, 60), 'other interval refused');
+  Check(not Otp.ValidateTOTP(RFC6238_SECRET_BASE32, 81804, 0, 6, 0), 'interval=0 refused');
+  Check(not Otp.ValidateTOTP(RFC6238_SECRET_BASE32, 81804, 0, 0, 30), 'digits=0 refused');
+end;
+
+{ TOtpVerifyTotpStepTests }
+
+procedure TOtpVerifyTotpStepTests.VerifyTotpStep_Rfc6238Vector_ReportsMatchedStep;
+var
+  Otp: IOtpProvider;
+  Step: Int64;
+const
+  T = 1111111109; // RFC 6238 Appendix B -> 07081804
+begin
+  Otp := TOtpFactory.CreateDefault;
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, 1, 1, Step), 'vector accepted');
+  CheckEqual(Step, T div 30, 'matched step is the current one');
+  CheckEqual(Step, 37037036, 'matched step value');
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, 0, 0, Step), 'window 0 accepted');
+  CheckEqual(Step, 37037036, 'matched step value with window 0');
+end;
+
+procedure TOtpVerifyTotpStepTests.VerifyTotpStep_AdjacentSteps_ReportMatchedStep;
+var
+  Otp: IOtpProvider;
+  Step: Int64;
+  Previous, Next: RawUtf8;
+const
+  T = 1732276800;
+begin
+  Otp := TOtpFactory.CreateDefault;
+  Previous := FormatOtpCode(Otp.ComputeOTP(RFC6238_SECRET_BIN, T div 30 - 1, 6), 6);
+  Next := FormatOtpCode(Otp.ComputeOTP(RFC6238_SECRET_BIN, T div 30 + 1, 6), 6);
+  CheckEqual(Length(Previous), 6);
+  CheckEqual(Length(Next), 6);
+
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, Previous, T, 1, 0, Step), 'previous step accepted');
+  CheckEqual(Step, T div 30 - 1, 'previous step reported');
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, Next, T, 0, 1, Step), 'next step accepted');
+  CheckEqual(Step, T div 30 + 1, 'next step reported');
+
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, Previous, T, 0, 1, Step), 'previous refused without StepsBack');
+  CheckEqual(Step, 0, 'no step reported on failure');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, Next, T, 1, 0, Step), 'next refused without StepsForward');
+  CheckEqual(Step, 0, 'no step reported on failure');
+end;
+
+procedure TOtpVerifyTotpStepTests.VerifyTotpStep_OutsideWindow_ReturnsFalse;
+var
+  Otp: IOtpProvider;
+  Step: Int64;
+  Code: RawUtf8;
+const
+  T = 1732276800;
+begin
+  Otp := TOtpFactory.CreateDefault;
+  Code := FormatOtpCode(Otp.ComputeOTP(RFC6238_SECRET_BIN, T div 30 + 2, 6), 6);
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, Code, T, 1, 1, Step), 'T+2 refused with window 1');
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, Code, T, 1, 2, Step), 'T+2 accepted with StepsForward=2');
+  CheckEqual(Step, T div 30 + 2, 'T+2 step reported');
+  Code := FormatOtpCode(Otp.ComputeOTP(RFC6238_SECRET_BIN, T div 30 - 10, 6), 6);
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, Code, T, 10, 0, Step), 'T-10 accepted with StepsBack=10');
+  CheckEqual(Step, T div 30 - 10, 'T-10 step reported');
+end;
+
+procedure TOtpVerifyTotpStepTests.VerifyTotpStep_MalformedCodes_ReturnFalse;
+var
+  Otp: IOtpProvider;
+  Step: Int64;
+  i: Integer;
+const
+  T = 1111111109; // valid code is 081804
+  BAD: array[0..11] of RawUtf8 = (
+    '81804', '+081804', ' 081804', '081804 ', '081804a', '0081804',
+    '18446744073709633420', '0x13F8C', '$13F8C', '4295049100', '', '08180');
+begin
+  Otp := TOtpFactory.CreateDefault;
+  for i := 0 to High(BAD) do
+  begin
+    Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, BAD[i], T, 1, 1, Step),
+      FormatString('malformed code [%] refused', [BAD[i]]));
+    CheckEqual(Step, 0, 'no step on failure');
+  end;
+end;
+
+procedure TOtpVerifyTotpStepTests.VerifyTotpStep_8Digits;
+var
+  Otp: IOtpProvider;
+  Step: Int64;
+const
+  T = 1234567890; // RFC 6238 Appendix B -> 89005924
+begin
+  Otp := TOtpFactory.CreateDefault;
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '89005924', T, 1, 1, Step, 8, 30), '8 digits accepted');
+  CheckEqual(Step, T div 30, '8-digit matched step');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '005924', T, 1, 1, Step, 8, 30), '6 digits refused with Digits=8');
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '005924', T, 1, 1, Step, 6, 30), '6 digits accepted with Digits=6');
+end;
+
+procedure TOtpVerifyTotpStepTests.VerifyTotpStep_InvalidParameters_ReturnFalse;
+var
+  Otp: IOtpProvider;
+  Step: Int64;
+const
+  T = 1111111109;
+begin
+  Otp := TOtpFactory.CreateDefault;
+  Check(not Otp.VerifyTOTPStep('', '081804', T, 1, 1, Step), 'empty secret');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', -1, 1, 1, Step), 'negative time');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, -1, 1, Step), 'negative StepsBack');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, 1, -1, Step), 'negative StepsForward');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, OTP_MAX_WINDOW_STEPS + 1, 1, Step), 'StepsBack above max');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, 1, OTP_MAX_WINDOW_STEPS + 1, Step), 'StepsForward above max');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, 1, 1, Step, 6, 0), 'interval=0');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, 1, 1, Step, 6, -30), 'interval<0');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, 1, 1, Step, 0, 30), 'digits=0');
+  Check(not Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '0000081804', T, 1, 1, Step, 10, 30), 'digits=10');
+  CheckEqual(Step, 0, 'no step on failure');
+  Check(Otp.VerifyTOTPStep(RFC6238_SECRET_BIN, '081804', T, 1, 1, Step), 'valid parameters still accepted');
+end;
+
+procedure TOtpVerifyTotpStepTests.VerifyTotpStep_ShortHash_RejectsZeroCode;
+var
+  Otp: IOtpProvider;
+  Step: Int64;
+begin
+  Otp := TOtpFactory.CreateWithProviders(
+    TFixedTimeProvider.Create(0),
+    TConstantCryptoProvider.Create('abc'),
+    TMormotBase32EncodingProvider.Create
+  );
+  Check(not Otp.VerifyTOTPStep('binary-secret', '000000', 1732276800, 1, 1, Step), '000000 refused on short hash');
+  CheckEqual(Step, 0, 'no step on failure');
+end;
+
+procedure TOtpVerifyTotpStepTests.VerifyTotpStep_EvaluatesEveryStep;
+var
+  Otp: IOtpProvider;
+  Crypto: TConstantCryptoProvider;
+  Step: Int64;
+const
+  T = 1732276800;
+begin
+  // constant hash -> every step yields the same code 899478: the whole window
+  // must be evaluated (no early exit) and the first matching step reported
+  Crypto := TConstantCryptoProvider.Create(BuildHashForOffset(0, $7f, $12, $34, $56));
+  Otp := TOtpFactory.CreateWithProviders(
+    TFixedTimeProvider.Create(T), Crypto, TMormotBase32EncodingProvider.Create);
+  Check(Otp.VerifyTOTPStep('binary-secret', '899478', T, 2, 3, Step), 'accepted');
+  CheckEqual(Crypto.CallCount, 6, 'all 6 steps of the window were computed');
+  CheckEqual(Step, T div 30 - 2, 'first matching step reported');
+  Check(not Otp.VerifyTOTPStep('binary-secret', '899479', T, 2, 3, Step), 'refused');
+  CheckEqual(Crypto.CallCount, 12, 'all 6 steps computed on failure too');
+end;
+
+{ TOtpParseCodeTests }
+
+procedure TOtpParseCodeTests.ParseOtpCode_AcceptsExactDigits;
+var
+  Value: Integer;
+begin
+  Check(ParseOtpCode('081804', 6, Value), '6 digits');
+  CheckEqual(Value, 81804);
+  Check(ParseOtpCode('000000', 6, Value), 'all zeros');
+  CheckEqual(Value, 0);
+  Check(ParseOtpCode('999999', 6, Value), 'all nines');
+  CheckEqual(Value, 999999);
+  Check(ParseOtpCode('07081804', 8, Value), '8 digits');
+  CheckEqual(Value, 7081804);
+  Check(ParseOtpCode('7', 1, Value), '1 digit');
+  CheckEqual(Value, 7);
+  Check(ParseOtpCode('999999999', 9, Value), '9 digits');
+  CheckEqual(Value, 999999999);
+end;
+
+procedure TOtpParseCodeTests.ParseOtpCode_RejectsMalformedInput;
+var
+  Value: Integer;
+  i: Integer;
+const
+  BAD: array[0..13] of RawUtf8 = (
+    '81804', '+081804', '-081804', ' 081804', '081804 ', '081804a', '0081804',
+    '0x13F8', '$13F8C', '', '08180', '08 804', '08'#9'804', '0818O4');
+begin
+  for i := 0 to High(BAD) do
+  begin
+    Check(not ParseOtpCode(BAD[i], 6, Value), FormatString('[%] refused', [BAD[i]]));
+    CheckEqual(Value, -1, 'value is -1 on failure');
+  end;
+  // non-ASCII digits (e.g. Arabic-Indic U+0661) are refused
+  Check(not ParseOtpCode('08180'#$D9#$A1, 6, Value), 'non-ASCII digit refused');
+  CheckEqual(Value, -1);
+end;
+
+procedure TOtpParseCodeTests.ParseOtpCode_RejectsInvalidDigits;
+var
+  Value: Integer;
+begin
+  Check(not ParseOtpCode('081804', 0, Value), 'digits=0');
+  CheckEqual(Value, -1);
+  Check(not ParseOtpCode('0000081804', 10, Value), 'digits=10');
+  CheckEqual(Value, -1);
+  Check(not ParseOtpCode('081804', -6, Value), 'digits<0');
+  CheckEqual(Value, -1);
+end;
+
+procedure TOtpParseCodeTests.FormatOtpCode_PadsWithLeadingZeros;
+begin
+  Check(FormatOtpCode(81804, 6) = '081804', '081804');
+  Check(FormatOtpCode(0, 6) = '000000', '000000');
+  Check(FormatOtpCode(7081804, 8) = '07081804', '07081804');
+  Check(FormatOtpCode(999999, 6) = '999999', '999999');
+  Check(FormatOtpCode(1000000, 6) = '', 'too large');
+  Check(FormatOtpCode(-1, 6) = '', 'negative');
+  Check(FormatOtpCode(1, 0) = '', 'digits=0');
+  Check(FormatOtpCode(1, 10) = '', 'digits=10');
+end;
+
+{ TOtpAuthUriTests }
+
+procedure TOtpAuthUriTests.BuildOtpAuthUri_PlainValues;
+begin
+  CheckEqual(BuildOtpAuthUri('mORMot', 'user', TEST_SECRET_BASE32),
+    'otpauth://totp/mORMot:user?secret=JBSWY3DPEHPK3PXP&issuer=mORMot&algorithm=SHA1&digits=6&period=30');
+  CheckEqual(BuildOtpAuthUri('mORMot', 'user', TEST_SECRET_BASE32, 8, 60),
+    'otpauth://totp/mORMot:user?secret=JBSWY3DPEHPK3PXP&issuer=mORMot&algorithm=SHA1&digits=8&period=60');
+  CheckEqual(BuildOtpAuthUri('mORMot', 'user', 'JB======'),
+    'otpauth://totp/mORMot:user?secret=JB&issuer=mORMot&algorithm=SHA1&digits=6&period=30',
+    'padding removed');
+end;
+
+procedure TOtpAuthUriTests.BuildOtpAuthUri_EncodesLabelAndIssuer;
+begin
+  CheckEqual(BuildOtpAuthUri('Example Bank', 'eve+x@evil.example&issuer=Bank#', TEST_SECRET_BASE32),
+    'otpauth://totp/Example%20Bank:eve%2Bx%40evil.example%26issuer%3DBank%23' +
+    '?secret=JBSWY3DPEHPK3PXP&issuer=Example%20Bank&algorithm=SHA1&digits=6&period=30');
+  CheckEqual(BuildOtpAuthUri('a:b/c?d', 'john.doe_1~', TEST_SECRET_BASE32),
+    'otpauth://totp/a%3Ab%2Fc%3Fd:john.doe_1~?secret=JBSWY3DPEHPK3PXP&issuer=a%3Ab%2Fc%3Fd' +
+    '&algorithm=SHA1&digits=6&period=30');
+  CheckEqual(BuildOtpAuthUri('', #$C3#$A9, TEST_SECRET_BASE32),
+    'otpauth://totp/%C3%A9?secret=JBSWY3DPEHPK3PXP&algorithm=SHA1&digits=6&period=30',
+    'UTF-8 bytes percent-encoded');
+end;
+
+procedure TOtpAuthUriTests.BuildOtpAuthUri_WithoutIssuer;
+begin
+  CheckEqual(BuildOtpAuthUri('', 'user', TEST_SECRET_BASE32),
+    'otpauth://totp/user?secret=JBSWY3DPEHPK3PXP&algorithm=SHA1&digits=6&period=30');
+end;
+
+procedure TOtpAuthUriTests.BuildOtpAuthUri_InvalidInput_ReturnsEmpty;
+begin
+  CheckEqual(BuildOtpAuthUri('mORMot', 'user', ''), '', 'empty secret');
+  CheckEqual(BuildOtpAuthUri('mORMot', 'user', '===='), '', 'padding only');
+  CheckEqual(BuildOtpAuthUri('mORMot', 'user', TEST_SECRET_BASE32, 0, 30), '', 'digits=0');
+  CheckEqual(BuildOtpAuthUri('mORMot', 'user', TEST_SECRET_BASE32, 10, 30), '', 'digits=10');
+  CheckEqual(BuildOtpAuthUri('mORMot', 'user', TEST_SECRET_BASE32, 6, 0), '', 'period=0');
 end;
 
 { TOtpFactoryTests }

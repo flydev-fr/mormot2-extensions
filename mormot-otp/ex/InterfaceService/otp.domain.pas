@@ -29,6 +29,7 @@ type
     fOtpEnabled: Boolean;
     fLastLoginAttempt: TDateTime;
     fFailedAttempts: Integer;
+    fLastOtpStep: Int64;
   public
     /// Normalize field values (trim whitespace, etc.)
     procedure Normalize; virtual;
@@ -71,6 +72,12 @@ type
     /// Count of consecutive failed authentication attempts
     property FailedAttempts: Integer 
       read fFailedAttempts write fFailedAttempts;
+
+    /// TOTP time step of the last accepted code
+    // - a code is only accepted if its step is greater than this value, so
+    // that a code can not be replayed during its validity window
+    property LastOtpStep: Int64
+      read fLastOtpStep write fLastOtpStep;
   end;
   
   TDomOtpUserObjArray = array of TDomOtpUser;
