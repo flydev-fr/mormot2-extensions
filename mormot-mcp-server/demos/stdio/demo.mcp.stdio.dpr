@@ -5,6 +5,7 @@ program demo.mcp.stdio;
 {$APPTYPE CONSOLE}
 
 uses
+  {$I mormot.uses.inc}
   sysutils,
   mormot.core.base,
   mormot.core.os,

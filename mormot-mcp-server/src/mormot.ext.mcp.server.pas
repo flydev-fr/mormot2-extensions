@@ -36,6 +36,7 @@ uses
   mormot.core.perf,
   mormot.core.collections,
   mormot.core.threads,
+  mormot.crypt.core, // RandomGuid (moved from mormot.core.* in recent mORMot2)
   mormot.net.sock,
   mormot.net.http,
   mormot.net.server,
