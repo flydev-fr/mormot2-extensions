@@ -197,6 +197,13 @@ type
     // for input which is not a valid JSON-RPC 2.0 message
     class function ParseMessage(const aJson: RawUtf8;
       out aMessage: TMcpJsonRpcMessage): TMcpMessageKind;
+    /// parse a JSON-RPC body, which may be a JSON object or a JSON array
+    // - the input must be strict JSON: trailing text, comments or unquoted
+    // names are a parse error
+    // - returns false, with aMessage.Kind set to mmkParseError or mmkInvalid,
+    // if aJson is not a JSON object or array
+    class function ParseJson(const aJson: RawUtf8; var aDoc: TDocVariantData;
+      out aMessage: TMcpJsonRpcMessage): boolean;
     /// validate one already parsed JSON-RPC message
     // - aDoc should have been parsed with JSON_FAST_FLOAT, so that a floating
     // point id is not mistaken for a string
@@ -479,21 +486,36 @@ class function TMcpJsonRpcProcessor.ParseMessage(const aJson: RawUtf8;
 var
   doc: TDocVariantData;
 begin
-  // JSON_FAST_FLOAT: with JSON_FAST, 1e5 would be parsed as a string
-  if doc.InitJson(aJson, JSON_FAST_FLOAT) then
+  if ParseJson(aJson, doc, aMessage) then
     result := ParseMessageDoc(doc, aMessage)
-  else if IsValidJson(aJson, {strict=}true) then
+  else
+    result := aMessage.Kind;
+end;
+
+class function TMcpJsonRpcProcessor.ParseJson(const aJson: RawUtf8;
+  var aDoc: TDocVariantData; out aMessage: TMcpJsonRpcMessage): boolean;
+var
+  valid: boolean;
+begin
+  // InitJson alone accepts trailing text, comments and unquoted names:
+  // check the whole input as strict JSON first
+  valid := IsValidJson(aJson, {strict=}true);
+  // JSON_FAST_FLOAT: with JSON_FAST, 1e5 would be parsed as a string
+  result := valid and
+            aDoc.InitJson(aJson, JSON_FAST_FLOAT);
+  if result then
+    exit;
+  if valid and
+     not (GotoNextNotSpace(pointer(aJson))^ in ['{', '[']) then
   begin
     // valid JSON, but neither an object nor an array (e.g. "ping" or 1)
     aMessage.Kind := mmkInvalid;
     aMessage.Error := 'Invalid Request: not a JSON object';
-    result := mmkInvalid;
   end
   else
   begin
     aMessage.Kind := mmkParseError;
     aMessage.Error := 'Parse error';
-    result := mmkParseError;
   end;
 end;
 
@@ -981,9 +1003,8 @@ begin
             resultData := ListResources
           else if msg.Method = 'resources/read' then
             resultData := ExecuteResourceRead(msg.Params)
-          else if msg.Method = 'notifications/initialized' then
-            resultData := Null
           else if msg.Kind = mmkNotification then
+            // e.g. notifications/initialized: nothing to do yet
             resultData := Null
           else
             raise EMcpException.CreateCode(JSONRPC_METHOD_NOT_FOUND,

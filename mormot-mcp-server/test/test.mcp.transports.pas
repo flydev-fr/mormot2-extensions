@@ -1717,6 +1717,13 @@ begin
     Check(PosEx('"code":-32700', client.Content) > 0, client.Content);
     Check(PosEx('"id"', client.Content) = 0, 'no id in parse error');
 
+    // trailing text after a valid object: parse error, not processed
+    status := client.Post(transport.Endpoint,
+      '{"jsonrpc":"2.0","id":9,"method":"ping"} x', JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, headers);
+    CheckEqual(status, HTTP_BADREQUEST, 'trailing text');
+    Check(PosEx('"code":-32700', client.Content) > 0, client.Content);
+
     // "id": null is not a notification
     status := client.Post(transport.Endpoint,
       '{"jsonrpc":"2.0","id":null,"method":"ping"}', JSON_CONTENT_TYPE,

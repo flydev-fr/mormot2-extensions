@@ -1172,12 +1172,8 @@ begin
   // Use InitJson (not InitJsonInPlace) because InContent may be a shared
   // reference-counted string — modifying it in-place causes EInvalidPointer.
   body := Ctxt.InContent;
-  if not doc.InitJson(body, JSON_FAST_FLOAT) then
-  begin
-    // not an object nor an array: let the core tell parse error from invalid
-    TMcpJsonRpcProcessor.ParseMessage(body, msg);
+  if not TMcpJsonRpcProcessor.ParseJson(body, doc, msg) then
     exit(Reject);
-  end;
 
   // Normalize: wrap single message in an array for uniform processing.
   // The transport parses batches itself and delegates individual messages

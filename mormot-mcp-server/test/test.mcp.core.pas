@@ -74,6 +74,7 @@ type
     procedure ResourceNotFoundData;
     procedure ToolExceptions;
     procedure NotificationWhileStopped;
+    procedure NotificationMethodAsRequest;
   end;
 
 implementation
@@ -528,6 +529,23 @@ begin
     CheckError(server, '{"jsonrpc":', JSONRPC_PARSE_ERROR, '');
     CheckError(server, 'xx', JSONRPC_PARSE_ERROR, '');
     CheckError(server, '', JSONRPC_PARSE_ERROR, '');
+    // not strict JSON: trailing text, extended syntax, comments
+    CheckError(server, '{"jsonrpc":"2.0","id":1,"method":"ping"} garbage',
+      JSONRPC_PARSE_ERROR, '');
+    CheckError(server, '{"jsonrpc":"2.0","id":1,"method":"ping"}{"x":1}',
+      JSONRPC_PARSE_ERROR, '');
+    CheckError(server, '{jsonrpc:"2.0",id:1,method:"ping"}', JSONRPC_PARSE_ERROR, '');
+    CheckError(server, '{''jsonrpc'':''2.0'',''id'':1,''method'':''ping''}',
+      JSONRPC_PARSE_ERROR, '');
+    CheckError(server, '{"jsonrpc":"2.0",/*c*/"id":1,"method":"ping"}',
+      JSONRPC_PARSE_ERROR, '');
+    CheckError(server, '{"jsonrpc":"2.0","id":1,"method":"ping",}',
+      JSONRPC_PARSE_ERROR, '');
+    CheckError(server, '{"jsonrpc":"2.0","id":01,"method":"ping"}',
+      JSONRPC_PARSE_ERROR, '');
+    // surrounding whitespace is fine
+    CheckEqual(server.ExecuteRequest(' {"jsonrpc":"2.0","id":1,"method":"ping"}'#13#10),
+      '{"jsonrpc":"2.0","id":1,"result":{}}');
   finally
     server.Free;
   end;
@@ -544,6 +562,7 @@ begin
     CheckError(server, '[{"jsonrpc":"2.0","id":1,"method":"ping"}]',
       JSONRPC_INVALID_REQUEST, '');
     CheckError(server, '"ping"', JSONRPC_INVALID_REQUEST, '');
+    CheckError(server, ' 1 ', JSONRPC_INVALID_REQUEST, '');
     // wrong or missing jsonrpc version: id is echoed when it is valid
     CheckError(server, '{"jsonrpc":"1.0","id":1,"method":"ping"}',
       JSONRPC_INVALID_REQUEST, '1');
@@ -702,6 +721,23 @@ begin
     CheckEqual(server.ExecuteRequest('{"jsonrpc":"2.0","id":1,"result":{}}'), '');
     CheckError(server, '{"jsonrpc":"2.0","id":"s","method":"ping"}',
       JSONRPC_INTERNAL_ERROR, '"s"', 'Server not active');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.NotificationMethodAsRequest;
+var
+  server: TMcpServer;
+begin
+  server := NewServer;
+  try
+    // as a notification: no response
+    CheckEqual(server.ExecuteRequest(
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}'), '');
+    // as a request: not a known method (and never "result": null)
+    CheckError(server, '{"jsonrpc":"2.0","id":1,"method":"notifications/initialized"}',
+      JSONRPC_METHOD_NOT_FOUND, '1');
   finally
     server.Free;
   end;
