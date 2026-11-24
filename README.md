@@ -1,3 +1,7 @@
+# THIS IS A FORK
+
+This is a personal extension and update of this repo. Credit goes to the original author. 
+
 # mORMot2 Extensions
 
 Finally going to share a small collection of tools and libraries built with the mORMot2 framework. Most, if not all, are written purely with it. That means if you are interested in using them in your own Pascal codebase, adopting mORMot2 is required.
