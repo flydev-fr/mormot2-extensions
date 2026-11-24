@@ -1,4 +1,4 @@
-# THIS IS A FORK
+# THIS IS AN UNOFFICIAL FORK
 
 This is a personal extension and update of this repo. Credit goes to the original author. 
 
