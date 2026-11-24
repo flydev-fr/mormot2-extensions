@@ -169,8 +169,9 @@ begin
     on E: ESynException do
     begin
       // Log error but don't crash
-      response := '{"jsonrpc":"2.0","error":{"code":-32603,"message":"' + 
-        StringToUtf8(E.Message) + '"},"id":null}';
+      // no id is known here, and the message may hold internal details
+      response := TMcpJsonRpcProcessor.CreateError(Unassigned,
+        JSONRPC_INTERNAL_ERROR, 'Internal error');
       WriteOutput(response);
     end;
   end;

@@ -33,6 +33,13 @@ type
       const aAuthCtx: TMcpAuthContext): variant; override;
   end;
 
+  /// raises a different exception depending on the Name argument
+  TFailTool = class(TMcpToolBase<TCalcParams>)
+  protected
+    function ExecuteTyped(const aParams: TCalcParams;
+      const aAuthCtx: TMcpAuthContext): variant; override;
+  end;
+
   TVersionResource = class(TMcpResourceBase)
   protected
     function GetContent: RawUtf8; override;
@@ -46,6 +53,11 @@ type
       aExpectedCode: integer; const aMessageContains: RawUtf8);
     function DocPropType(const props: PDocVariantData;
       const propName: RawUtf8): RawUtf8;
+    function NewServer: TMcpServer;
+    // - aIdJson is the expected JSON of the "id" member, or '' if it must be absent
+    procedure CheckError(aServer: TMcpServer; const aRequest: RawUtf8;
+      aExpectedCode: integer; const aIdJson: RawUtf8;
+      const aMessageContains: RawUtf8 = '');
   published
     procedure SchemaFromRecord;
     procedure JsonRpcProcessor;
@@ -54,6 +66,14 @@ type
     procedure ServerNotActive;
     procedure BadRequests;
     procedure NotificationsNoResponse;
+    procedure ParseErrors;
+    procedure InvalidRequests;
+    procedure RequestIdEchoed;
+    procedure ClientResponsesIgnored;
+    procedure MissingParams;
+    procedure ResourceNotFoundData;
+    procedure ToolExceptions;
+    procedure NotificationWhileStopped;
   end;
 
 implementation
@@ -72,6 +92,20 @@ begin
   finally
     builder.Free;
   end;
+end;
+
+{ TFailTool }
+
+function TFailTool.ExecuteTyped(const aParams: TCalcParams;
+  const aAuthCtx: TMcpAuthContext): variant;
+begin
+  if aParams.Name = 'convert' then
+    raise EConvertError.Create('secret /etc/passwd')
+  else if aParams.Name = 'plain' then
+    raise EMcpException.Create('secret plain')
+  else if aParams.Name = 'coded' then
+    raise EMcpException.CreateCode(JSONRPC_INVALID_PARAMS, 'bad %', ['input']);
+  result := _ObjFast(['content', _ArrFast([])]);
 end;
 
 { TVersionResource }
@@ -166,6 +200,35 @@ begin
     propDoc^.GetAsRawUtf8('type', result);
 end;
 
+function TTestMcpCore.NewServer: TMcpServer;
+begin
+  EnsureCalcParamsRtti;
+  result := TMcpServer.Create('TestServer', '1.0');
+  result.RegisterTool(TCalcTool.Create('calc', 'Add two numbers'));
+  result.RegisterTool(TFailTool.Create('fail', 'Raise an exception'));
+  result.RegisterResource(TVersionResource.Create('version://info', 'Version',
+    'Server version information', 'application/json'));
+  result.Start;
+end;
+
+procedure TTestMcpCore.CheckError(aServer: TMcpServer; const aRequest: RawUtf8;
+  aExpectedCode: integer; const aIdJson: RawUtf8; const aMessageContains: RawUtf8);
+var
+  response: RawUtf8;
+  doc: TDocVariantData;
+  ndx: PtrInt;
+begin
+  response := aServer.ExecuteRequest(aRequest);
+  CheckErrorResponse(response, aExpectedCode, aMessageContains);
+  if CheckFailed(doc.InitJson(response, JSON_FAST_FLOAT), aRequest) then
+    exit;
+  ndx := doc.GetValueIndex('id');
+  if aIdJson = '' then
+    Check(ndx < 0, 'id must be absent')
+  else if not CheckFailed(ndx >= 0, 'id missing') then
+    CheckEqual(VariantSaveJson(doc.Values[ndx]), aIdJson, 'id');
+end;
+
 procedure TTestMcpCore.SchemaFromRecord;
 var
   schema: variant;
@@ -192,9 +255,7 @@ end;
 procedure TTestMcpCore.JsonRpcProcessor;
 var
   proc: TMcpJsonRpcProcessor;
-  method: RawUtf8;
-  params, requestId: variant;
-  ok: boolean;
+  msg: TMcpJsonRpcMessage;
   response: RawUtf8;
   doc, resultDoc: PDocVariantData;
   responseVar, resultVar: variant;
@@ -204,14 +265,13 @@ var
 begin
   proc := TMcpJsonRpcProcessor.Create('TestServer', '1.0');
   try
-    ok := proc.ParseRequest('{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}',
-      method, params, requestId);
-    Check(ok);
-    CheckEqual(method, 'ping');
-    Check(VariantToIntegerDef(requestId, 0) = 1);
+    Check(proc.ParseMessage('{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}',
+      msg) = mmkRequest);
+    CheckEqual(msg.Method, 'ping');
+    Check(VariantToIntegerDef(msg.Id, 0) = 1);
 
     v := _ObjFast(['ok', true]);
-    response := proc.CreateSuccessResponse(requestId, v);
+    response := proc.CreateSuccessResponse(msg.Id, v);
     responseVar := _JsonFast(response);
     doc := _Safe(responseVar);
     Check(doc^.GetAsRawUtf8('jsonrpc', jsonrpc));
@@ -391,6 +451,7 @@ begin
     Check(errDoc^.IsObject);
     code := errDoc^.GetValueOrDefault('code', 0);
     Check(code = JSONRPC_INTERNAL_ERROR);
+    CheckEqual(VariantToIntegerDef(doc^.GetValueOrNull('id'), 0), 1, 'id echoed');
   finally
     server.Free;
   end;
@@ -414,29 +475,29 @@ begin
     server.Start;
 
     response := server.ExecuteRequest('{');
-    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, '');
+    CheckErrorResponse(response, JSONRPC_PARSE_ERROR, '');
 
     response := server.ExecuteRequest('{"jsonrpc":"2.0","id":1}');
-    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, '');
+    CheckErrorResponse(response, JSONRPC_INVALID_REQUEST, '');
 
     response := server.ExecuteRequest('{"jsonrpc":"2.0","id":2,"method":"nope"}');
-    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, 'Method not found');
+    CheckErrorResponse(response, JSONRPC_METHOD_NOT_FOUND, 'Method not found');
 
     response := server.ExecuteRequest(
       '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{}}');
-    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, 'Missing tool name');
+    CheckErrorResponse(response, JSONRPC_INVALID_PARAMS, 'Missing tool name');
 
     response := server.ExecuteRequest(
       '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"missing","arguments":{}}}');
-    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, 'Tool not found');
+    CheckErrorResponse(response, JSONRPC_INVALID_PARAMS, 'Tool not found');
 
     response := server.ExecuteRequest(
       '{"jsonrpc":"2.0","id":5,"method":"resources/read","params":{}}');
-    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, 'Missing uri');
+    CheckErrorResponse(response, JSONRPC_INVALID_PARAMS, 'Missing uri');
 
     response := server.ExecuteRequest(
       '{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"missing://info"}}');
-    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, 'Resource not found');
+    CheckErrorResponse(response, MCP_RESOURCE_NOT_FOUND, 'Resource not found');
   finally
     server.Free;
   end;
@@ -452,6 +513,195 @@ begin
     server.Start;
     response := server.ExecuteRequest('{"jsonrpc":"2.0","method":"ping","params":{}}');
     Check(TrimU(response) = '');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.ParseErrors;
+var
+  server: TMcpServer;
+begin
+  server := NewServer;
+  try
+    CheckError(server, '{', JSONRPC_PARSE_ERROR, '');
+    CheckError(server, '{"jsonrpc":', JSONRPC_PARSE_ERROR, '');
+    CheckError(server, 'xx', JSONRPC_PARSE_ERROR, '');
+    CheckError(server, '', JSONRPC_PARSE_ERROR, '');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.InvalidRequests;
+var
+  server: TMcpServer;
+begin
+  server := NewServer;
+  try
+    // not an object (batches are not supported)
+    CheckError(server, '[]', JSONRPC_INVALID_REQUEST, '');
+    CheckError(server, '[{"jsonrpc":"2.0","id":1,"method":"ping"}]',
+      JSONRPC_INVALID_REQUEST, '');
+    CheckError(server, '"ping"', JSONRPC_INVALID_REQUEST, '');
+    // wrong or missing jsonrpc version: id is echoed when it is valid
+    CheckError(server, '{"jsonrpc":"1.0","id":1,"method":"ping"}',
+      JSONRPC_INVALID_REQUEST, '1');
+    CheckError(server, '{"id":2,"method":"ping"}', JSONRPC_INVALID_REQUEST, '2');
+    CheckError(server, '{"jsonrpc":2,"id":3,"method":"ping"}',
+      JSONRPC_INVALID_REQUEST, '3');
+    // invalid id: must be a string or an integer, never null
+    CheckError(server, '{"jsonrpc":"2.0","id":null,"method":"ping"}',
+      JSONRPC_INVALID_REQUEST, '');
+    CheckError(server, '{"jsonrpc":"2.0","id":2.5,"method":"ping"}',
+      JSONRPC_INVALID_REQUEST, '');
+    CheckError(server, '{"jsonrpc":"2.0","id":1e5,"method":"ping"}',
+      JSONRPC_INVALID_REQUEST, '');
+    CheckError(server, '{"jsonrpc":"2.0","id":true,"method":"ping"}',
+      JSONRPC_INVALID_REQUEST, '');
+    CheckError(server, '{"jsonrpc":"2.0","id":{},"method":"ping"}',
+      JSONRPC_INVALID_REQUEST, '');
+    CheckError(server, '{"jsonrpc":"2.0","id":[1],"method":"ping"}',
+      JSONRPC_INVALID_REQUEST, '');
+    // method must be a string
+    CheckError(server, '{"jsonrpc":"2.0","id":4,"method":5}',
+      JSONRPC_INVALID_REQUEST, '4');
+    CheckError(server, '{"jsonrpc":"2.0","id":5,"method":null}',
+      JSONRPC_INVALID_REQUEST, '5');
+    // params must be an object when present
+    CheckError(server, '{"jsonrpc":"2.0","id":6,"method":"ping","params":[1]}',
+      JSONRPC_INVALID_REQUEST, '6');
+    CheckError(server, '{"jsonrpc":"2.0","id":7,"method":"ping","params":"x"}',
+      JSONRPC_INVALID_REQUEST, '7');
+    // neither a request nor a response
+    CheckError(server, '{"jsonrpc":"2.0","id":8}', JSONRPC_INVALID_REQUEST, '8');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.RequestIdEchoed;
+var
+  server: TMcpServer;
+  response: RawUtf8;
+begin
+  server := NewServer;
+  try
+    response := server.ExecuteRequest('{"jsonrpc":"2.0","id":"abc","method":"ping"}');
+    CheckEqual(response, '{"jsonrpc":"2.0","id":"abc","result":{}}');
+    response := server.ExecuteRequest('{"jsonrpc":"2.0","id":"1","method":"ping"}');
+    CheckEqual(response, '{"jsonrpc":"2.0","id":"1","result":{}}');
+    response := server.ExecuteRequest('{"jsonrpc":"2.0","id":-3,"method":"ping"}');
+    CheckEqual(response, '{"jsonrpc":"2.0","id":-3,"result":{}}');
+    response := server.ExecuteRequest(
+      '{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}');
+    CheckEqual(response, '{"jsonrpc":"2.0","id":9007199254740993,"result":{}}');
+    // message is JSON-escaped (no string concatenation)
+    CheckError(server, '{"jsonrpc":"2.0","id":"q\"","method":"a\"b"}',
+      JSONRPC_METHOD_NOT_FOUND, '"q\""', 'a"b');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.ClientResponsesIgnored;
+var
+  server: TMcpServer;
+begin
+  server := NewServer;
+  try
+    CheckEqual(server.ExecuteRequest('{"jsonrpc":"2.0","id":1,"result":{}}'), '');
+    CheckEqual(server.ExecuteRequest(
+      '{"jsonrpc":"2.0","id":"x","error":{"code":-32601,"message":"no"}}'), '');
+    CheckEqual(server.ExecuteRequest(
+      '{"jsonrpc":"2.0","error":{"code":-32700,"message":"parse"}}'), '');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.MissingParams;
+var
+  server: TMcpServer;
+begin
+  server := NewServer;
+  try
+    // regression: tools/call without params dereferenced a nil document
+    CheckError(server, '{"jsonrpc":"2.0","id":1,"method":"tools/call"}',
+      JSONRPC_INVALID_PARAMS, '1', 'Missing tool name');
+    CheckError(server, '{"jsonrpc":"2.0","id":2,"method":"resources/read"}',
+      JSONRPC_INVALID_PARAMS, '2', 'Missing uri');
+    CheckError(server, '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":5}}',
+      JSONRPC_INVALID_PARAMS, '3');
+    CheckError(server, '{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":[]}}',
+      JSONRPC_INVALID_PARAMS, '4');
+    // the server still works afterwards
+    CheckEqual(server.ExecuteRequest('{"jsonrpc":"2.0","id":5,"method":"ping"}'),
+      '{"jsonrpc":"2.0","id":5,"result":{}}');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.ResourceNotFoundData;
+var
+  server: TMcpServer;
+  response, uri: RawUtf8;
+  doc: TDocVariantData;
+begin
+  server := NewServer;
+  try
+    response := server.ExecuteRequest(
+      '{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"nope://x"}}');
+    CheckErrorResponse(response, MCP_RESOURCE_NOT_FOUND, 'Resource not found');
+    Check(doc.InitJson(response, JSON_FAST));
+    Check(doc.O['error']^.O['data']^.GetAsRawUtf8('uri', uri), 'error.data.uri');
+    CheckEqual(uri, 'nope://x');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.ToolExceptions;
+var
+  server: TMcpServer;
+  response: RawUtf8;
+begin
+  server := NewServer;
+  try
+    // not an ESynException: caught, generic message, no internal details
+    response := server.ExecuteRequest('{"jsonrpc":"2.0","id":1,"method":"tools/call",' +
+      '"params":{"name":"fail","arguments":{"name":"convert"}}}');
+    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, 'Internal error');
+    Check(PosEx('secret', response) = 0, 'no exception message leaked');
+    // EMcpException without a code: not meant for the client either
+    response := server.ExecuteRequest('{"jsonrpc":"2.0","id":2,"method":"tools/call",' +
+      '"params":{"name":"fail","arguments":{"name":"plain"}}}');
+    CheckErrorResponse(response, JSONRPC_INTERNAL_ERROR, 'Internal error');
+    Check(PosEx('secret', response) = 0, 'no exception message leaked');
+    // EMcpException with a code: raised on purpose, message kept
+    CheckError(server, '{"jsonrpc":"2.0","id":3,"method":"tools/call",' +
+      '"params":{"name":"fail","arguments":{"name":"coded"}}}',
+      JSONRPC_INVALID_PARAMS, '3', 'bad input');
+    // a notification never gets an answer, even when it fails
+    CheckEqual(server.ExecuteRequest('{"jsonrpc":"2.0","method":"tools/call",' +
+      '"params":{"name":"fail","arguments":{"name":"convert"}}}'), '');
+  finally
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpCore.NotificationWhileStopped;
+var
+  server: TMcpServer;
+begin
+  server := TMcpServer.Create('TestServer', '1.0');
+  try
+    CheckEqual(server.ExecuteRequest(
+      '{"jsonrpc":"2.0","method":"notifications/initialized"}'), '');
+    CheckEqual(server.ExecuteRequest('{"jsonrpc":"2.0","id":1,"result":{}}'), '');
+    CheckError(server, '{"jsonrpc":"2.0","id":"s","method":"ping"}',
+      JSONRPC_INTERNAL_ERROR, '"s"', 'Server not active');
   finally
     server.Free;
   end;

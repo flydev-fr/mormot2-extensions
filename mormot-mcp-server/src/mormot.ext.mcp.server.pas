@@ -1116,11 +1116,19 @@ var
   session: TMcpStreamableSession;
   doc: TDocVariantData;
   singleItem: variant;
-  item: PDocVariantData;
   i: PtrInt;
   hasRequest, isInitialize: boolean;
-  method: RawUtf8;
+  msg: TMcpJsonRpcMessage;
   itemJson: RawUtf8;
+
+  function Reject: cardinal;
+  begin
+    // the body as a whole is refused: 400 with a JSON-RPC error and no id
+    // (or the id of the invalid message, when it could be read)
+    Ctxt.SetOutJson(TMcpJsonRpcProcessor.CreateMessageError(msg));
+    result := HTTP_BADREQUEST;
+  end;
+
 begin
   // --- CORS headers on every response ---
   SetCorsHeaders(Ctxt);
@@ -1164,7 +1172,12 @@ begin
   // Use InitJson (not InitJsonInPlace) because InContent may be a shared
   // reference-counted string — modifying it in-place causes EInvalidPointer.
   body := Ctxt.InContent;
-  doc.InitJson(body, JSON_FAST);
+  if not doc.InitJson(body, JSON_FAST_FLOAT) then
+  begin
+    // not an object nor an array: let the core tell parse error from invalid
+    TMcpJsonRpcProcessor.ParseMessage(body, msg);
+    exit(Reject);
+  end;
 
   // Normalize: wrap single message in an array for uniform processing.
   // The transport parses batches itself and delegates individual messages
@@ -1185,19 +1198,16 @@ begin
   hasRequest := false;
   isInitialize := false;
   for i := 0 to doc.Count - 1 do
-  begin
-    item := _Safe(doc.Values[i]);
-    // A request has 'method' and 'id'; a notification has 'method' but no 'id'
-    if item^.GetAsRawUtf8('method', method) then
-    begin
-      if not VarIsVoid(item^.GetValueOrNull('id')) then
-      begin
-        hasRequest := true;
-        if method = 'initialize' then
-          isInitialize := true;
-      end;
+    case TMcpJsonRpcProcessor.ParseMessageDoc(_Safe(doc.Values[i])^, msg) of
+      mmkInvalid:
+        exit(Reject);
+      mmkRequest:
+        begin
+          hasRequest := true;
+          if msg.Method = 'initialize' then
+            isInitialize := true;
+        end;
     end;
-  end;
 
   // --- Accept header validation skipped ---
   // mORMot's THttpAsyncServer filters standard headers (Accept, Content-Type,
@@ -1412,10 +1422,11 @@ end;
 procedure TMcpStreamableHttpTransport.StreamDeferredResponse(
   const aWrite: TMcpRawWrite; const aBody, aOutHeaders: RawUtf8);
 var
-  sessionId, responseJson, itemJson, method: RawUtf8;
+  sessionId, responseJson, itemJson: RawUtf8;
   doc: TDocVariantData;
   singleItem: variant;
   item: PDocVariantData;
+  msg: TMcpJsonRpcMessage;
   session: TMcpStreamableSession;
   emitter: IMcpStreamEmitter;
   handled: boolean;
@@ -1436,7 +1447,7 @@ begin
     fSessions.TryGetValue(sessionId, session);
 
   // Re-parse the request body (same normalization as mcp()).
-  doc.InitJson(aBody, JSON_FAST);
+  doc.InitJson(aBody, JSON_FAST_FLOAT);
   if doc.IsObject then
   begin
     singleItem := variant(doc);
@@ -1464,10 +1475,11 @@ begin
     for i := 0 to doc.Count - 1 do
     begin
       item := _Safe(doc.Values[i]);
-      if not item^.GetAsRawUtf8('method', method) then
-        continue; // skip responses (no 'method' field)
+      if not (TMcpJsonRpcProcessor.ParseMessageDoc(item^, msg) in
+          [mmkRequest, mmkNotification]) then
+        continue; // skip responses (mcp() already rejected invalid messages)
       itemJson := item^.ToJson;
-      if VarIsVoid(item^.GetValueOrNull('id')) then
+      if msg.Kind = mmkNotification then
       begin
         // notification: process silently, no SSE event
         fServer.ExecuteRequest(itemJson, sessionId);
@@ -1482,7 +1494,7 @@ begin
       if not handled then
       begin
         responseJson := fServer.ExecuteRequest(itemJson, sessionId);
-        if method = 'initialize' then
+        if msg.Method = 'initialize' then
           responseJson := PatchProtocolVersion(responseJson);
       end;
       // final SSE event with the JSON-RPC response for this request

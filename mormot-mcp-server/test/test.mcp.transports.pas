@@ -98,6 +98,7 @@ type
     procedure MissingAcceptHeader;
     procedure WrongContentType;
     procedure PostStreamsChunked;
+    procedure InvalidMessages;
   end;
 
 implementation
@@ -1671,6 +1672,85 @@ begin
       HTTP_KEEPALIVE_MS,
       'Accept: text/event-stream, application/json');
     CheckEqual(status, 415, 'wrong content-type should return 415');
+  finally
+    client.Free;
+    if transport <> nil then
+      transport.Stop;
+    transport.Free;
+    server.Free;
+  end;
+end;
+
+procedure TTestMcpStreamableTransport.InvalidMessages;
+var
+  server: TMcpServer;
+  transport: TMcpStreamableHttpTransport;
+  port: integer;
+  client: THttpClientSocket;
+  status: integer;
+  request, sessionId, headers: RawUtf8;
+begin
+  EnsureCalcParamsRtti;
+  server := TMcpServer.Create('StreamableTestServer', '1.0');
+  transport := nil;
+  client := nil;
+  try
+    server.RegisterTool(TCalcTool.Create('calc', 'Add two numbers'));
+    server.Start;
+    port := StartStreamableTransport(server, transport);
+    client := THttpClientSocket.Open('127.0.0.1', UInt32ToUtf8(port));
+    request := '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' +
+      '{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":' +
+      '{"name":"test","version":"1.0"}}}';
+    status := client.Post(transport.Endpoint, request, JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, 'Accept: text/event-stream, application/json');
+    CheckEqual(status, HTTP_SUCCESS);
+    FindNameValue(client.Headers, 'MCP-SESSION-ID:', sessionId);
+    sessionId := TrimU(sessionId);
+    headers := FormatUtf8('Accept: text/event-stream, application/json'#13#10 +
+      'Mcp-Session-Id: %', [sessionId]);
+
+    // truncated JSON: parse error, not 202
+    status := client.Post(transport.Endpoint, '{"jsonrpc":', JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, headers);
+    CheckEqual(status, HTTP_BADREQUEST, 'truncated json');
+    Check(PosEx('"code":-32700', client.Content) > 0, client.Content);
+    Check(PosEx('"id"', client.Content) = 0, 'no id in parse error');
+
+    // "id": null is not a notification
+    status := client.Post(transport.Endpoint,
+      '{"jsonrpc":"2.0","id":null,"method":"ping"}', JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, headers);
+    CheckEqual(status, HTTP_BADREQUEST, 'null id');
+    Check(PosEx('"code":-32600', client.Content) > 0, client.Content);
+
+    // wrong jsonrpc version: invalid request, id echoed
+    status := client.Post(transport.Endpoint,
+      '{"jsonrpc":"1.0","id":7,"method":"ping"}', JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, headers);
+    CheckEqual(status, HTTP_BADREQUEST, 'jsonrpc 1.0');
+    Check(PosEx('"code":-32600', client.Content) > 0, client.Content);
+    Check(PosEx('"id":7', client.Content) > 0, client.Content);
+
+    // a client response is accepted without any answer
+    status := client.Post(transport.Endpoint,
+      '{"jsonrpc":"2.0","id":3,"result":{}}', JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, headers);
+    CheckEqual(status, HTTP_ACCEPTED, 'client response');
+
+    // regression: tools/call without params gets an error event
+    status := client.Post(transport.Endpoint,
+      '{"jsonrpc":"2.0","id":4,"method":"tools/call"}', JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, headers);
+    CheckEqual(status, HTTP_SUCCESS, 'tools/call without params');
+    Check(PosEx('"code":-32602', client.Content) > 0, client.Content);
+
+    // the session still works
+    status := client.Post(transport.Endpoint,
+      '{"jsonrpc":"2.0","id":5,"method":"ping"}', JSON_CONTENT_TYPE,
+      HTTP_KEEPALIVE_MS, headers);
+    CheckEqual(status, HTTP_SUCCESS);
+    Check(PosEx('"id":5,"result"', client.Content) > 0, client.Content);
   finally
     client.Free;
     if transport <> nil then

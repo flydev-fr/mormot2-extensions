@@ -21,6 +21,7 @@ interface
 {$I mormot.defines.inc}
 
 uses
+  sysutils,
   mormot.core.base,
   mormot.core.os,
   mormot.core.unicode,
@@ -32,7 +33,8 @@ uses
   mormot.core.json,
   mormot.core.collections,
   mormot.core.threads,
-  mormot.core.interfaces;
+  mormot.core.interfaces,
+  mormot.core.log;
 
 
 { ************ Core Types and Authentication Context }
@@ -50,6 +52,11 @@ const
   JSONRPC_METHOD_NOT_FOUND = -32601;
   JSONRPC_INVALID_PARAMS = -32602;
   JSONRPC_INTERNAL_ERROR = -32603;
+
+  /// MCP error code for an unknown resource in resources/read
+  // - a SHOULD in the 2025-11-25 specification, which also expects
+  // error.data.uri; the 2026-07-28 revision uses JSONRPC_INVALID_PARAMS instead
+  MCP_RESOURCE_NOT_FOUND = -32002;
 
 type
   /// Authentication context passed to tool/resource execution
@@ -76,7 +83,54 @@ type
   end;
 
   /// MCP-specific exception class
-  EMcpException = class(ESynException);
+  // - raise it with CreateCode() for an error meant for the client: its code,
+  // message and Data are sent back as the JSON-RPC error
+  // - any other exception, including an EMcpException without a Code, is
+  // answered with a generic JSONRPC_INTERNAL_ERROR and only logged
+  EMcpException = class(ESynException)
+  protected
+    fCode: integer;
+    fData: variant;
+  public
+    /// raise an error meant for the client, with its JSON-RPC error code
+    constructor CreateCode(aCode: integer; const aFormat: RawUtf8;
+      const aArgs: array of const);
+    /// the JSON-RPC error code, or 0 if the error is not meant for the client
+    property Code: integer
+      read fCode;
+    /// optional value sent as the "data" member of the JSON-RPC error
+    property Data: variant
+      read fData write fData;
+  end;
+
+  /// the kinds of incoming JSON-RPC message, as identified by
+  // TMcpJsonRpcProcessor.ParseMessage
+  // - mmkParseError: the input is not valid JSON
+  // - mmkInvalid: valid JSON, but not a valid JSON-RPC 2.0 message
+  // - mmkRequest: has a method and an id, and expects a response
+  // - mmkNotification: has a method but no id, and expects no response
+  // - mmkResponse: a response from the client (result or error, no method)
+  TMcpMessageKind = (
+    mmkParseError,
+    mmkInvalid,
+    mmkRequest,
+    mmkNotification,
+    mmkResponse);
+
+  /// an incoming JSON-RPC message, as parsed by TMcpJsonRpcProcessor.ParseMessage
+  TMcpJsonRpcMessage = record
+    /// what kind of message this is
+    Kind: TMcpMessageKind;
+    /// the method name of a request or notification
+    Method: RawUtf8;
+    /// the params object, or Unassigned if absent
+    Params: variant;
+    /// the request id (an integer or a string), or Unassigned if absent
+    // or invalid
+    Id: variant;
+    /// why the message is invalid, for mmkParseError and mmkInvalid
+    Error: RawUtf8;
+  end;
 
 
 { ************ IInvokable Interfaces for Tools and Resources }
@@ -135,22 +189,32 @@ type
     fServerName: RawUtf8;
     fServerVersion: RawUtf8;
     fProtocolVersion: RawUtf8;
-    function ExtractRequestId(const aRequest: variant): variant;
-    function CreateResponse(const aRequestId: variant): variant;
-    function CreateErrorResponse(const aRequestId: variant; 
-      aErrorCode: integer; const aErrorMsg: RawUtf8): variant;
   public
     /// initialize with server information
     constructor Create(const aServerName, aServerVersion: RawUtf8);
-    /// parse JSON-RPC request and return method name and params
-    // - raises exception on parse error
-    function ParseRequest(const aJson: RawUtf8; 
-      out aMethod: RawUtf8; out aParams: variant; out aRequestId: variant): boolean;
+    /// parse and validate one incoming JSON-RPC message
+    // - never raises: returns mmkParseError or mmkInvalid (with aMessage.Error)
+    // for input which is not a valid JSON-RPC 2.0 message
+    class function ParseMessage(const aJson: RawUtf8;
+      out aMessage: TMcpJsonRpcMessage): TMcpMessageKind;
+    /// validate one already parsed JSON-RPC message
+    // - aDoc should have been parsed with JSON_FAST_FLOAT, so that a floating
+    // point id is not mistaken for a string
+    class function ParseMessageDoc(const aDoc: TDocVariantData;
+      out aMessage: TMcpJsonRpcMessage): TMcpMessageKind;
     /// create a successful JSON-RPC response
-    function CreateSuccessResponse(const aRequestId, aResult: variant): RawUtf8;
+    class function CreateSuccessResponse(const aRequestId, aResult: variant): RawUtf8;
     /// create an error JSON-RPC response
-    function CreateError(const aRequestId: variant; aErrorCode: integer; 
-      const aErrorMsg: RawUtf8): RawUtf8;
+    // - the "id" member is omitted if aRequestId is Unassigned or Null
+    // - the "data" member is omitted if aData is Unassigned or Null
+    class function CreateError(const aRequestId: variant; aErrorCode: integer;
+      const aErrorMsg: RawUtf8; const aData: variant): RawUtf8; overload;
+    /// create an error JSON-RPC response, with no "data" member
+    class function CreateError(const aRequestId: variant; aErrorCode: integer;
+      const aErrorMsg: RawUtf8): RawUtf8; overload;
+    /// create the error response for a mmkParseError or mmkInvalid message
+    // - JSONRPC_PARSE_ERROR or JSONRPC_INVALID_REQUEST, with the id if readable
+    class function CreateMessageError(const aMessage: TMcpJsonRpcMessage): RawUtf8;
     /// handle 'initialize' method
     function HandleInitialize(const aParams: variant): variant;
     /// handle 'ping' method
@@ -226,6 +290,8 @@ type
     function ExecuteResourceRead(const aParams: variant): variant;
     function ListTools: variant;
     function ListResources: variant;
+    function ExceptionToError(E: Exception;
+      const aMessage: TMcpJsonRpcMessage): RawUtf8;
   public
     /// initialize the MCP server
     constructor Create(const aServerName: RawUtf8 = 'M-MCP-Server';
@@ -275,6 +341,16 @@ type
 
 
 implementation
+
+
+{ ************ EMcpException }
+
+constructor EMcpException.CreateCode(aCode: integer; const aFormat: RawUtf8;
+  const aArgs: array of const);
+begin
+  CreateUtf8(aFormat, aArgs);
+  fCode := aCode;
+end;
 
 
 { ************ TMcpSchemaGenerator Implementation }
@@ -377,82 +453,159 @@ begin
   fProtocolVersion := MCP_PROTOCOL_VERSION;
 end;
 
-function TMcpJsonRpcProcessor.ExtractRequestId(const aRequest: variant): variant;
+// true if aName is a JSON string member of aDoc (numbers are not converted)
+function GetStringValue(const aDoc: TDocVariantData; const aName: RawUtf8;
+  out aValue: RawUtf8): boolean;
+var
+  v: PVariant;
 begin
-  with _Safe(aRequest)^ do
-    result := GetValueOrNull('id');
+  result := aDoc.GetAsPVariant(aName, v) and VarIsString(v^);
+  if result then
+    aValue := VariantToUtf8(v^);
 end;
 
-function TMcpJsonRpcProcessor.CreateResponse(const aRequestId: variant): variant;
+// write '{"jsonrpc":"2.0"' and the "id" member, if any
+procedure AddMessageStart(W: TJsonWriter; const aRequestId: variant);
+begin
+  W.AddShort('{"jsonrpc":"2.0"');
+  if VarIsEmptyOrNull(aRequestId) then
+    exit;
+  W.AddShort(',"id":');
+  W.AddVariant(aRequestId);
+end;
+
+class function TMcpJsonRpcProcessor.ParseMessage(const aJson: RawUtf8;
+  out aMessage: TMcpJsonRpcMessage): TMcpMessageKind;
 var
   doc: TDocVariantData;
 begin
-  doc.InitObject(['jsonrpc', '2.0'], JSON_FAST);
-  doc.AddValue('id', aRequestId);
-  result := variant(doc);
+  // JSON_FAST_FLOAT: with JSON_FAST, 1e5 would be parsed as a string
+  if doc.InitJson(aJson, JSON_FAST_FLOAT) then
+    result := ParseMessageDoc(doc, aMessage)
+  else if IsValidJson(aJson, {strict=}true) then
+  begin
+    // valid JSON, but neither an object nor an array (e.g. "ping" or 1)
+    aMessage.Kind := mmkInvalid;
+    aMessage.Error := 'Invalid Request: not a JSON object';
+    result := mmkInvalid;
+  end
+  else
+  begin
+    aMessage.Kind := mmkParseError;
+    aMessage.Error := 'Parse error';
+    result := mmkParseError;
+  end;
 end;
 
-function TMcpJsonRpcProcessor.CreateErrorResponse(const aRequestId: variant;
-  aErrorCode: integer; const aErrorMsg: RawUtf8): variant;
+class function TMcpJsonRpcProcessor.ParseMessageDoc(const aDoc: TDocVariantData;
+  out aMessage: TMcpJsonRpcMessage): TMcpMessageKind;
 var
-  doc, errorObj: TDocVariantData;
+  v: PVariant;
+  hasId: boolean;
+  version: RawUtf8;
 begin
-  doc.InitObject(['jsonrpc', '2.0'], JSON_FAST);
-  doc.AddValue('id', aRequestId);
-  
-  errorObj.InitObject(['code', aErrorCode, 'message', aErrorMsg], JSON_FAST);
-  doc.AddValue('error', variant(errorObj));
-  
-  result := variant(doc);
-end;
-
-function TMcpJsonRpcProcessor.ParseRequest(const aJson: RawUtf8;
-  out aMethod: RawUtf8; out aParams: variant; out aRequestId: variant): boolean;
-var
-  doc: PDocVariantData;
-  request: variant;
-begin
-  result := false;
-  aMethod := '';
-  aParams := Null;
-  aRequestId := Null;
-
-  // Parse JSON
-  request := _JsonFast(aJson);
-  doc := _Safe(request);
-  if not doc.IsObject then
+  result := mmkInvalid;
+  aMessage.Kind := mmkInvalid;
+  if not aDoc.IsObject then
+  begin
+    aMessage.Error := 'Invalid Request: not a JSON object';
     exit;
-
-  // Extract method
-  if not doc.GetAsRawUtf8('method', aMethod) then
-    exit;
-
-  // Extract params (optional)
-  aParams := doc.GetValueOrNull('params');
-
-  // Extract id (optional for notifications)
-  aRequestId := ExtractRequestId(request);
-  
-  result := true;
+  end;
+  // read the id first, so that it can be echoed in an error response
+  hasId := aDoc.GetAsPVariant('id', v);
+  if hasId then
+    case TVarData(v^).VType of
+      varInteger, varInt64, varString:
+        aMessage.Id := v^;
+    end;
+  if not GetStringValue(aDoc, 'jsonrpc', version) or
+     (version <> '2.0') then
+    aMessage.Error := 'Invalid Request: jsonrpc must be "2.0"'
+  else if not aDoc.GetAsPVariant('method', v) then
+    if aDoc.Exists('result') or
+       aDoc.Exists('error') then
+      result := mmkResponse
+    else
+      aMessage.Error := 'Invalid Request: missing method'
+  else if not VarIsString(v^) then
+    aMessage.Error := 'Invalid Request: method must be a string'
+  else if hasId and VarIsEmptyOrNull(aMessage.Id) then
+    aMessage.Error := 'Invalid Request: id must be a string or an integer'
+  else
+  begin
+    aMessage.Method := VariantToUtf8(v^);
+    if aDoc.GetAsPVariant('params', v) then
+      if _Safe(v^)^.IsObject then
+        aMessage.Params := v^
+      else
+      begin
+        aMessage.Error := 'Invalid Request: params must be an object';
+        exit;
+      end;
+    if hasId then
+      result := mmkRequest
+    else
+      result := mmkNotification;
+  end;
+  aMessage.Kind := result;
 end;
 
-function TMcpJsonRpcProcessor.CreateSuccessResponse(const aRequestId, aResult: variant): RawUtf8;
+class function TMcpJsonRpcProcessor.CreateSuccessResponse(
+  const aRequestId, aResult: variant): RawUtf8;
 var
-  response: variant;
-  doc: PDocVariantData;
+  W: TJsonWriter;
+  tmp: TTextWriterStackBuffer;
 begin
-  response := CreateResponse(aRequestId);
-  _ObjAddProp('result', aResult, response);
-  result := ToUtf8(response);
+  W := TJsonWriter.CreateOwnedStream(tmp);
+  try
+    AddMessageStart(W, aRequestId);
+    W.AddShort(',"result":');
+    W.AddVariant(aResult);
+    W.AddDirect('}');
+    W.SetText(result);
+  finally
+    W.Free;
+  end;
 end;
 
-function TMcpJsonRpcProcessor.CreateError(const aRequestId: variant;
+class function TMcpJsonRpcProcessor.CreateError(const aRequestId: variant;
+  aErrorCode: integer; const aErrorMsg: RawUtf8; const aData: variant): RawUtf8;
+var
+  W: TJsonWriter;
+  tmp: TTextWriterStackBuffer;
+begin
+  W := TJsonWriter.CreateOwnedStream(tmp);
+  try
+    AddMessageStart(W, aRequestId);
+    W.AddShort(',"error":{"code":');
+    W.Add(aErrorCode);
+    W.AddShort(',"message":');
+    W.AddJsonString(aErrorMsg);
+    if not VarIsEmptyOrNull(aData) then
+    begin
+      W.AddShort(',"data":');
+      W.AddVariant(aData);
+    end;
+    W.AddDirect('}', '}');
+    W.SetText(result);
+  finally
+    W.Free;
+  end;
+end;
+
+class function TMcpJsonRpcProcessor.CreateError(const aRequestId: variant;
   aErrorCode: integer; const aErrorMsg: RawUtf8): RawUtf8;
-var
-  response: variant;
 begin
-  response := CreateErrorResponse(aRequestId, aErrorCode, aErrorMsg);
-  result := ToUtf8(response);
+  result := CreateError(aRequestId, aErrorCode, aErrorMsg, Null);
+end;
+
+class function TMcpJsonRpcProcessor.CreateMessageError(
+  const aMessage: TMcpJsonRpcMessage): RawUtf8;
+begin
+  if aMessage.Kind = mmkParseError then
+    result := CreateError(Unassigned, JSONRPC_PARSE_ERROR, aMessage.Error)
+  else
+    result := CreateError(aMessage.Id, JSONRPC_INVALID_REQUEST, aMessage.Error);
 end;
 
 function TMcpJsonRpcProcessor.HandleInitialize(const aParams: variant): variant;
@@ -725,16 +878,18 @@ var
   args: variant;
   tool: IMcpTool;
 begin
-  if _Safe(aParams, doc) then
-    if not doc.GetAsRawUtf8('name', toolName) then
-      raise EMcpException.CreateU('Missing tool name in tools/call');
+  doc := _Safe(aParams);
+  if not GetStringValue(doc^, 'name', toolName) then
+    raise EMcpException.CreateCode(JSONRPC_INVALID_PARAMS,
+      'Missing tool name in tools/call', []);
 
-  args := doc.GetValueOrDefault('arguments',  Null);
+  args := doc^.GetValueOrDefault('arguments', Null);
 
   fSafe.Lock;
   try
     if not fTools.TryGetValue(toolName, tool) then
-      raise EMcpException.CreateUtf8('Tool not found: %', [toolName]);
+      raise EMcpException.CreateCode(JSONRPC_INVALID_PARAMS,
+        'Tool not found: %', [toolName]);
   finally
     fSafe.UnLock;
   end;
@@ -748,15 +903,22 @@ var
   uri, content: RawUtf8;
   resource: IMcpResource;
   result_doc, contentsList, contentItem: TDocVariantData;
+  notFound: EMcpException;
 begin
-  if _Safe(aParams, doc) then
-    if not doc.GetAsRawUtf8('uri', uri) then
-      raise EMcpException.CreateU('Missing uri in resources/read');
+  doc := _Safe(aParams);
+  if not GetStringValue(doc^, 'uri', uri) then
+    raise EMcpException.CreateCode(JSONRPC_INVALID_PARAMS,
+      'Missing uri in resources/read', []);
 
   fSafe.Lock;
   try
     if not fResources.TryGetValue(uri, resource) then
-      raise EMcpException.CreateUtf8('Resource not found: %', [uri]);
+    begin
+      notFound := EMcpException.CreateCode(MCP_RESOURCE_NOT_FOUND,
+        'Resource not found: %', [uri]);
+      notFound.Data := _ObjFast(['uri', uri]);
+      raise notFound;
+    end;
   finally
     fSafe.UnLock;
   end;
@@ -781,64 +943,81 @@ end;
 
 function TMcpServer.ExecuteRequest(const aRequestJson, aSessionId: RawUtf8): RawUtf8;
 var
-  method: RawUtf8;
-  params, requestId, resultData: variant;
+  msg: TMcpJsonRpcMessage;
+  resultData: variant;
   authCtx: TMcpAuthContext;
-  isNotification: boolean;
 begin
-  requestId := Null;
-  isNotification := false;
-  if not fActive then
-  begin
-    result := fProcessor.CreateError(Null, JSONRPC_INTERNAL_ERROR, 'Server not active');
-    exit;
-  end;
-
-  try
-    // Parse request
-    if not fProcessor.ParseRequest(aRequestJson, method, params, requestId) then
-      raise EMcpException.Create('Invalid JSON-RPC request');
-
-    isNotification := VarIsVoid(requestId);
-
-    // Setup auth context (stub for now)
-    FillCharFast(authCtx, SizeOf(authCtx), 0);
-    authCtx.IsAuthenticated := (aSessionId <> '');
-    authCtx.UserID := aSessionId;
-
-    // Dispatch to handler
-    if method = 'initialize' then
-      resultData := fProcessor.HandleInitialize(params)
-    else if method = 'ping' then
-      resultData := fProcessor.HandlePing
-    else if method = 'tools/list' then
-      resultData := ListTools
-    else if method = 'tools/call' then
-      resultData := ExecuteToolCall(params, authCtx)
-    else if method = 'resources/list' then
-      resultData := ListResources
-    else if method = 'resources/read' then
-      resultData := ExecuteResourceRead(params)
-    else if method = 'notifications/initialized' then
-      resultData := Null
-    else if isNotification then
-      resultData := Null
-    else
-      raise EMcpException.CreateUtf8('Method not found: %', [method]);
-
-    // Create success response (unless notification)
-    if isNotification then
-      result := ''
-    else
-      result := fProcessor.CreateSuccessResponse(requestId, resultData);
-
-  except
-    on E: ESynException do
-      if isNotification then
-        result := ''
+  result := '';
+  case fProcessor.ParseMessage(aRequestJson, msg) of
+    mmkParseError, mmkInvalid:
+      result := fProcessor.CreateMessageError(msg);
+    mmkResponse:
+      ; // this server sends no requests yet, so there is nothing to match
+    mmkRequest, mmkNotification:
+      if not fActive then
+      begin
+        // notifications MUST NOT receive a response
+        if msg.Kind = mmkRequest then
+          result := fProcessor.CreateError(msg.Id, JSONRPC_INTERNAL_ERROR,
+            'Server not active');
+      end
       else
-        result := fProcessor.CreateError(requestId, JSONRPC_INTERNAL_ERROR,
-          StringToUtf8(E.Message));
+        try
+          // Setup auth context (stub for now)
+          FillCharFast(authCtx, SizeOf(authCtx), 0);
+          authCtx.IsAuthenticated := (aSessionId <> '');
+          authCtx.UserID := aSessionId;
+
+          // Dispatch to handler
+          if msg.Method = 'initialize' then
+            resultData := fProcessor.HandleInitialize(msg.Params)
+          else if msg.Method = 'ping' then
+            resultData := fProcessor.HandlePing
+          else if msg.Method = 'tools/list' then
+            resultData := ListTools
+          else if msg.Method = 'tools/call' then
+            resultData := ExecuteToolCall(msg.Params, authCtx)
+          else if msg.Method = 'resources/list' then
+            resultData := ListResources
+          else if msg.Method = 'resources/read' then
+            resultData := ExecuteResourceRead(msg.Params)
+          else if msg.Method = 'notifications/initialized' then
+            resultData := Null
+          else if msg.Kind = mmkNotification then
+            resultData := Null
+          else
+            raise EMcpException.CreateCode(JSONRPC_METHOD_NOT_FOUND,
+              'Method not found: %', [msg.Method]);
+
+          if msg.Kind = mmkRequest then
+            result := fProcessor.CreateSuccessResponse(msg.Id, resultData);
+        except
+          on E: Exception do
+            result := ExceptionToError(E, msg);
+        end;
+  end;
+end;
+
+function TMcpServer.ExceptionToError(E: Exception;
+  const aMessage: TMcpJsonRpcMessage): RawUtf8;
+begin
+  result := '';
+  if (E is EMcpException) and
+     (EMcpException(E).Code <> 0) then
+  begin
+    // raised on purpose for the client: send its code, message and data
+    if aMessage.Kind = mmkRequest then
+      result := fProcessor.CreateError(aMessage.Id, EMcpException(E).Code,
+        StringToUtf8(E.Message), EMcpException(E).Data);
+  end
+  else
+  begin
+    // unexpected: the details may be internal, so they only go to the log
+    TSynLog.Add.Log(sllError, '% %: % raised %',
+      [aMessage.Method, aMessage.Id, ClassNameShort(E)^, E.Message], self);
+    if aMessage.Kind = mmkRequest then
+      result := fProcessor.CreateError(aMessage.Id, JSONRPC_INTERNAL_ERROR,
+        'Internal error');
   end;
 end;
 
